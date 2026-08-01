@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import cytoscape from "cytoscape";
+import type { Core } from "cytoscape";
 import type { GraphData } from "../types";
 
 interface CallGraphProps {
@@ -16,30 +16,37 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
       return undefined;
     }
 
-    const graphInstance = cytoscape({
-      container: container.current,
-      elements: [
-        ...graph.nodes.map((node) => ({
-          data: {
-            id: node.id,
-            label: `${node.fqn}\n${node.signature}`,
-            language: node.language,
-          },
-          classes: node.id === selectedSymbolId ? "selected" : "",
-        })),
-        ...graph.edges
-          .filter((edge) => edge.target)
-          .map((edge) => ({
+    let destroyed = false;
+    let graphInstance: Core | undefined;
+
+    void import("cytoscape").then(({ default: cytoscape }) => {
+      if (destroyed || !container.current) {
+        return;
+      }
+      graphInstance = cytoscape({
+        container: container.current,
+        elements: [
+          ...graph.nodes.map((node) => ({
             data: {
-              id: `edge-${edge.id}`,
-              source: edge.source,
-              target: edge.target,
-              label: edge.confidence === "resolved" ? "" : edge.confidence,
+              id: node.id,
+              label: `${node.fqn}\n${node.signature}`,
+              language: node.language,
             },
-            classes: edge.confidence,
+            classes: node.id === selectedSymbolId ? "selected" : "",
           })),
-      ],
-      style: [
+          ...graph.edges
+            .filter((edge) => edge.target)
+            .map((edge) => ({
+              data: {
+                id: `edge-${edge.id}`,
+                source: edge.source,
+                target: edge.target,
+                label: edge.confidence === "resolved" ? "" : edge.confidence,
+              },
+              classes: edge.confidence,
+            })),
+        ],
+        style: [
         {
           selector: "node",
           style: {
@@ -95,22 +102,26 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
             "target-arrow-color": "#f5c979",
           },
         },
-      ],
-      layout: {
-        name: "breadthfirst",
-        directed: true,
-        padding: 32,
-        spacingFactor: 1.15,
-        animate: false,
-      },
-      wheelSensitivity: 0.18,
+        ],
+        layout: {
+          name: "breadthfirst",
+          directed: true,
+          padding: 32,
+          spacingFactor: 1.15,
+          animate: false,
+        },
+        wheelSensitivity: 0.18,
+      });
+
+      graphInstance.on("tap", "node", (event) => {
+        onSelectSymbol(event.target.id());
+      });
     });
 
-    graphInstance.on("tap", "node", (event) => {
-      onSelectSymbol(event.target.id());
-    });
-
-    return () => graphInstance.destroy();
+    return () => {
+      destroyed = true;
+      graphInstance?.destroy();
+    };
   }, [graph, onSelectSymbol, selectedSymbolId]);
 
   if (!graph) {
