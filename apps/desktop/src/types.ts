@@ -1,0 +1,62 @@
+export type SourceLanguage = "java" | "python";
+export type EdgeConfidence = "resolved" | "ambiguous" | "unresolved";
+
+export interface RepositoryRecord {
+  id: string;
+  rootPath: string;
+  displayName: string;
+  branch: string;
+  head: string;
+  isDirty: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnalysisSummary {
+  repositoryId: string;
+  sourceFileCount: number;
+  symbolCount: number;
+  edgeCount: number;
+  diagnosticCount: number;
+  status: "completed" | "partial";
+}
+
+export interface SymbolRecord {
+  id: string;
+  language: SourceLanguage;
+  kind: string;
+  fqn: string;
+  signature: string;
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+  astFingerprint: string;
+}
+
+export interface GraphEdge {
+  id: number;
+  source: string;
+  target: string | null;
+  unresolvedName: string | null;
+  confidence: EdgeConfidence;
+  sourceLine: number;
+}
+
+export interface GraphData {
+  nodes: SymbolRecord[];
+  edges: GraphEdge[];
+}
+
+export interface NoteRecord {
+  symbolId: string;
+  bodyMarkdown: string;
+  tags: string[];
+  updatedAt: string;
+}
+
+export interface SourceFile {
+  relativePath: string;
+  source: string;
+  startLine: number;
+  endLine: number;
+}

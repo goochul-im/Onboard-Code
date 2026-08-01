@@ -246,6 +246,7 @@ fn collect_java_declarations(
         "class_declaration"
         | "interface_declaration"
         | "enum_declaration"
+        | "record_declaration"
         | "annotation_type_declaration" => {
             if let Some(name) = declaration_name(node, source) {
                 scopes.push(name);
@@ -487,8 +488,7 @@ fn python_module_name(relative_path: &str) -> String {
     let without_extension = relative_path.strip_suffix(".py").unwrap_or(relative_path);
     let without_initializer = without_extension
         .strip_suffix("/__init__")
-        .unwrap_or(without_extension)
-        .strip_suffix("\\__init__")
+        .or_else(|| without_extension.strip_suffix("\\__init__"))
         .unwrap_or(without_extension);
     without_initializer.replace(['/', '\\'], ".")
 }
@@ -540,7 +540,13 @@ fn walk_children(node: Node<'_>, mut visit: impl FnMut(Node<'_>)) {
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_file, resolve_calls, EdgeConfidence, SourceLanguage};
+    use super::{analyze_file, python_module_name, resolve_calls, EdgeConfidence, SourceLanguage};
+
+    #[test]
+    fn omits_python_initializer_from_module_name() {
+        assert_eq!(python_module_name("package/__init__.py"), "package");
+        assert_eq!(python_module_name("package/module.py"), "package.module");
+    }
 
     #[test]
     fn extracts_and_resolves_java_methods_in_the_same_class() {
