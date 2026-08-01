@@ -3,7 +3,11 @@ use std::{fs, path::Path};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
-use crate::repository::RepositorySnapshot;
+use crate::{
+    analysis::{EdgeConfidence, IndexedEdge, IndexedSymbol},
+    indexer::RepositoryAnalysis,
+    repository::RepositorySnapshot,
+};
 
 pub struct Database {
     connection: Connection,
@@ -20,6 +24,17 @@ pub struct RepositoryRecord {
     pub is_dirty: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisSummary {
+    pub repository_id: String,
+    pub source_file_count: usize,
+    pub symbol_count: usize,
+    pub edge_count: usize,
+    pub diagnostic_count: usize,
+    pub status: String,
 }
 
 impl Database {
@@ -157,6 +172,82 @@ impl Database {
         Ok(records)
     }
 
+    pub fn repository_by_id(&self, id: &str) -> rusqlite::Result<Option<RepositoryRecord>> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT id, root_path, display_name, branch, head, is_dirty, created_at, updated_at
+                FROM repositories
+                WHERE id = ?1
+                "#,
+                [id],
+                row_to_repository,
+            )
+            .optional()
+    }
+
+    pub fn replace_analysis(
+        &mut self,
+        repository_id: &str,
+        revision: &str,
+        analysis: &RepositoryAnalysis,
+    ) -> rusqlite::Result<AnalysisSummary> {
+        let status = if analysis.diagnostics.is_empty() {
+            "completed"
+        } else {
+            "partial"
+        };
+        let diagnostics = serde_json::to_string(&analysis.diagnostics)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO analysis_runs (repository_id, revision, status, diagnostics_json)
+            VALUES (?1, ?2, 'running', '[]')
+            "#,
+            params![repository_id, revision],
+        )?;
+        let analysis_run_id = transaction.last_insert_rowid();
+
+        transaction.execute(
+            "DELETE FROM call_edges WHERE repository_id = ?1",
+            [repository_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM symbols WHERE repository_id = ?1",
+            [repository_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM search_index WHERE repository_id = ?1 AND entity_type = 'symbol'",
+            [repository_id],
+        )?;
+
+        for symbol in &analysis.symbols {
+            insert_symbol(&transaction, repository_id, symbol)?;
+        }
+        for edge in &analysis.edges {
+            insert_edge(&transaction, repository_id, edge)?;
+        }
+        transaction.execute(
+            r#"
+            UPDATE analysis_runs
+            SET status = ?1, completed_at = CURRENT_TIMESTAMP, diagnostics_json = ?2
+            WHERE id = ?3
+            "#,
+            params![status, diagnostics, analysis_run_id],
+        )?;
+        transaction.commit()?;
+
+        Ok(AnalysisSummary {
+            repository_id: repository_id.into(),
+            source_file_count: analysis.source_file_count,
+            symbol_count: analysis.symbols.len(),
+            edge_count: analysis.edges.len(),
+            diagnostic_count: analysis.diagnostics.len(),
+            status: status.into(),
+        })
+    }
+
     fn repository_by_path(&self, root_path: &str) -> rusqlite::Result<Option<RepositoryRecord>> {
         self.connection
             .query_row(
@@ -170,6 +261,74 @@ impl Database {
             )
             .optional()
     }
+}
+
+fn insert_symbol(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    symbol: &IndexedSymbol,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        r#"
+        INSERT INTO symbols (
+          id, repository_id, language, kind, fqn, signature, relative_path,
+          start_line, end_line, ast_fingerprint
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+        params![
+            symbol.id,
+            repository_id,
+            symbol.language.as_str(),
+            symbol.kind,
+            symbol.fqn,
+            symbol.signature,
+            symbol.relative_path,
+            symbol.start_line,
+            symbol.end_line,
+            symbol.ast_fingerprint,
+        ],
+    )?;
+    transaction.execute(
+        r#"
+        INSERT INTO search_index (repository_id, entity_type, entity_id, title, content)
+        VALUES (?1, 'symbol', ?2, ?3, ?4)
+        "#,
+        params![
+            repository_id,
+            symbol.id,
+            symbol.fqn,
+            format!("{} {}", symbol.signature, symbol.relative_path),
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn insert_edge(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    edge: &IndexedEdge,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        r#"
+        INSERT INTO call_edges (
+          repository_id, caller_symbol_id, callee_symbol_id, unresolved_name, confidence, source_line
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+        params![
+            repository_id,
+            edge.caller_symbol_id,
+            edge.callee_symbol_id,
+            edge.unresolved_name,
+            confidence_label(&edge.confidence),
+            edge.source_line,
+        ],
+    )?;
+    Ok(())
+}
+
+fn confidence_label(confidence: &EdgeConfidence) -> &'static str {
+    confidence.as_str()
 }
 
 fn row_to_repository(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryRecord> {
@@ -188,6 +347,11 @@ fn row_to_repository(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryReco
 #[cfg(test)]
 mod tests {
     use std::{env, fs};
+
+    use crate::{
+        analysis::{analyze_file, resolve_calls, SourceLanguage},
+        indexer::RepositoryAnalysis,
+    };
 
     use super::*;
 
@@ -227,6 +391,63 @@ mod tests {
         assert_eq!(repository.head, "def456");
         assert!(repository.is_dirty);
         assert_eq!(database.list_repositories().unwrap().len(), 1);
+
+        drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn replaces_a_repository_analysis_atomically() {
+        let path = temporary_database_path("analysis");
+        let mut database = Database::open(&path).expect("database opens");
+        let repository = RepositorySnapshot {
+            root_path: "/tmp/analysis-example".into(),
+            display_name: "analysis-example".into(),
+            branch: "main".into(),
+            head: "abc123".into(),
+            is_dirty: false,
+        };
+        database
+            .upsert_repository("repo_analysis", &repository)
+            .expect("repository inserts");
+        let file = analyze_file(
+            SourceLanguage::Python,
+            "sample.py",
+            "def start():\n    finish()\n\ndef finish():\n    return None\n",
+        )
+        .expect("source analyzes");
+        let analysis = RepositoryAnalysis {
+            source_file_count: 1,
+            edges: resolve_calls(&file.symbols, &file.calls),
+            symbols: file.symbols,
+            diagnostics: file.diagnostics,
+        };
+
+        let summary = database
+            .replace_analysis("repo_analysis", "abc123", &analysis)
+            .expect("analysis persists");
+
+        assert_eq!(summary.source_file_count, 1);
+        assert_eq!(summary.symbol_count, 2);
+        assert_eq!(summary.edge_count, 1);
+        let symbol_count: u32 = database
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM symbols WHERE repository_id = 'repo_analysis'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("symbol count");
+        let edge_count: u32 = database
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM call_edges WHERE repository_id = 'repo_analysis'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("edge count");
+        assert_eq!(symbol_count, 2);
+        assert_eq!(edge_count, 1);
 
         drop(database);
         let _ = fs::remove_file(path);

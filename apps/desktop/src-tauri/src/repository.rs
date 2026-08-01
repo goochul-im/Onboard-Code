@@ -56,6 +56,36 @@ pub fn stable_repository_id(root_path: &str) -> String {
     format!("repo_{hash:016x}")
 }
 
+pub fn source_files(repository_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository_root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .map_err(|error| format!("Git 파일 목록을 읽을 수 없습니다: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Git 파일 목록을 읽을 수 없습니다: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter(|path| path.ends_with(".java") || path.ends_with(".py"))
+        .map(PathBuf::from)
+        .collect())
+}
+
 fn git_output<const N: usize>(repository_path: &Path, args: [&str; N]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
