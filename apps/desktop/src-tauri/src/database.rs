@@ -62,6 +62,15 @@ pub struct NoteRecord {
     pub body_markdown: String,
     pub tags: Vec<String>,
     pub updated_at: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanNote {
+    pub symbol_fqn: String,
+    pub symbol_signature: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -136,8 +145,11 @@ impl Database {
               id INTEGER PRIMARY KEY,
               repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
               symbol_id TEXT NOT NULL,
+              symbol_fqn TEXT NOT NULL DEFAULT '',
+              symbol_signature TEXT NOT NULL DEFAULT '',
               body_markdown TEXT NOT NULL DEFAULT '',
               tags_json TEXT NOT NULL DEFAULT '[]',
+              status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'orphan')),
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(repository_id, symbol_id)
@@ -159,6 +171,7 @@ impl Database {
             );
             "#,
         )?;
+        ensure_notes_columns(&connection)?;
 
         Ok(Self { connection })
     }
@@ -264,6 +277,41 @@ impl Database {
         for edge in &analysis.edges {
             insert_edge(&transaction, repository_id, edge)?;
         }
+        transaction.execute(
+            r#"
+            UPDATE notes
+            SET status = 'orphan'
+            WHERE repository_id = ?1
+              AND NOT EXISTS (
+                SELECT 1 FROM symbols
+                WHERE symbols.repository_id = notes.repository_id
+                  AND symbols.id = notes.symbol_id
+              )
+            "#,
+            [repository_id],
+        )?;
+        transaction.execute(
+            r#"
+            UPDATE notes
+            SET symbol_id = (
+                  SELECT id FROM symbols
+                  WHERE symbols.repository_id = notes.repository_id
+                    AND symbols.fqn = notes.symbol_fqn
+                    AND symbols.signature = notes.symbol_signature
+                  LIMIT 1
+                ),
+                status = 'linked'
+            WHERE repository_id = ?1
+              AND status = 'orphan'
+              AND EXISTS (
+                SELECT 1 FROM symbols
+                WHERE symbols.repository_id = notes.repository_id
+                  AND symbols.fqn = notes.symbol_fqn
+                  AND symbols.signature = notes.symbol_signature
+              )
+            "#,
+            [repository_id],
+        )?;
         transaction.execute(
             r#"
             UPDATE analysis_runs
@@ -392,7 +440,7 @@ impl Database {
         self.connection
             .query_row(
                 r#"
-                SELECT symbol_id, body_markdown, tags_json, updated_at
+                SELECT symbol_id, body_markdown, tags_json, updated_at, status
                 FROM notes
                 WHERE repository_id = ?1 AND symbol_id = ?2
                 "#,
@@ -417,14 +465,25 @@ impl Database {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             r#"
-            INSERT INTO notes (repository_id, symbol_id, body_markdown, tags_json)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT INTO notes (
+              repository_id, symbol_id, symbol_fqn, symbol_signature, body_markdown, tags_json, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'linked')
             ON CONFLICT(repository_id, symbol_id) DO UPDATE SET
+              symbol_fqn = excluded.symbol_fqn,
+              symbol_signature = excluded.symbol_signature,
               body_markdown = excluded.body_markdown,
               tags_json = excluded.tags_json,
+              status = 'linked',
               updated_at = CURRENT_TIMESTAMP
             "#,
-            params![repository_id, symbol_id, body_markdown, tags_json],
+            params![
+                repository_id,
+                symbol_id,
+                symbol.fqn,
+                symbol.signature,
+                body_markdown,
+                tags_json
+            ],
         )?;
         transaction.execute(
             "DELETE FROM search_index WHERE repository_id = ?1 AND entity_type = 'note' AND entity_id = ?2",
@@ -441,6 +500,27 @@ impl Database {
 
         self.load_note(repository_id, symbol_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn list_orphan_notes(&self, repository_id: &str) -> rusqlite::Result<Vec<OrphanNote>> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT symbol_fqn, symbol_signature, updated_at
+            FROM notes
+            WHERE repository_id = ?1 AND status = 'orphan'
+            ORDER BY updated_at DESC
+            "#,
+        )?;
+        let results = statement
+            .query_map([repository_id], |row| {
+                Ok(OrphanNote {
+                    symbol_fqn: row.get(0)?,
+                    symbol_signature: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>();
+        results
     }
 
     pub fn source_for_symbol(
@@ -655,7 +735,45 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
         body_markdown: row.get(1)?,
         tags,
         updated_at: row.get(3)?,
+        status: row.get(4)?,
     })
+}
+
+fn ensure_notes_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(notes)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+    if !columns.contains("symbol_fqn") {
+        connection.execute(
+            "ALTER TABLE notes ADD COLUMN symbol_fqn TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !columns.contains("symbol_signature") {
+        connection.execute(
+            "ALTER TABLE notes ADD COLUMN symbol_signature TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !columns.contains("status") {
+        connection.execute(
+            "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'linked'",
+            [],
+        )?;
+    }
+    connection.execute_batch(
+        r#"
+        UPDATE notes
+        SET symbol_fqn = COALESCE(NULLIF(symbol_fqn, ''), (
+              SELECT fqn FROM symbols WHERE symbols.id = notes.symbol_id
+            ), 'unknown'),
+            symbol_signature = COALESCE(NULLIF(symbol_signature, ''), (
+              SELECT signature FROM symbols WHERE symbols.id = notes.symbol_id
+            ), '');
+        "#,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -791,6 +909,120 @@ mod tests {
                 .expect("note exists")
                 .body_markdown,
             "이 함수는 분석을 시작합니다."
+        );
+
+        let deleted_analysis = RepositoryAnalysis {
+            source_file_count: 0,
+            symbols: Vec::new(),
+            edges: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        database
+            .replace_analysis("repo_analysis", "def456", &deleted_analysis)
+            .expect("empty analysis persists");
+        assert_eq!(
+            database
+                .list_orphan_notes("repo_analysis")
+                .expect("orphan notes load")
+                .len(),
+            1
+        );
+
+        let moved_file = analyze_file(
+            SourceLanguage::Python,
+            "moved/sample.py",
+            "def start():\n    finish()\n\ndef finish():\n    return None\n",
+        )
+        .expect("moved source analyzes");
+        let moved_start_symbol_id = moved_file
+            .symbols
+            .iter()
+            .find(|symbol| symbol.fqn == "moved.sample.start")
+            .expect("moved start symbol")
+            .id
+            .clone();
+        let moved_analysis = RepositoryAnalysis {
+            source_file_count: 1,
+            edges: resolve_calls(&moved_file.symbols, &moved_file.calls),
+            symbols: moved_file.symbols,
+            diagnostics: moved_file.diagnostics,
+        };
+        database
+            .replace_analysis("repo_analysis", "ghi789", &moved_analysis)
+            .expect("moved analysis persists");
+        assert_eq!(
+            database
+                .list_orphan_notes("repo_analysis")
+                .expect("orphan notes load")
+                .len(),
+            1,
+            "a renamed FQN remains safely orphaned instead of silently reconnecting"
+        );
+        assert!(database
+            .load_note("repo_analysis", &moved_start_symbol_id)
+            .expect("note lookup")
+            .is_none());
+
+        let java_file = analyze_file(
+            SourceLanguage::Java,
+            "src/Checkout.java",
+            "package example; class Checkout { void start() {} }",
+        )
+        .expect("java source analyzes");
+        let java_start_symbol_id = java_file
+            .symbols
+            .iter()
+            .find(|symbol| symbol.fqn == "example.Checkout.start")
+            .expect("java start symbol")
+            .id
+            .clone();
+        let java_analysis = RepositoryAnalysis {
+            source_file_count: 1,
+            edges: resolve_calls(&java_file.symbols, &java_file.calls),
+            symbols: java_file.symbols,
+            diagnostics: java_file.diagnostics,
+        };
+        database
+            .replace_analysis("repo_analysis", "jkl012", &java_analysis)
+            .expect("java analysis persists");
+        database
+            .save_note(
+                "repo_analysis",
+                &java_start_symbol_id,
+                "파일 이동 뒤에도 보존할 노트입니다.",
+                &[],
+            )
+            .expect("java note saves");
+
+        let moved_java_file = analyze_file(
+            SourceLanguage::Java,
+            "src/core/Checkout.java",
+            "package example; class Checkout { void start() {} }",
+        )
+        .expect("moved java source analyzes");
+        let moved_java_start_symbol_id = moved_java_file
+            .symbols
+            .iter()
+            .find(|symbol| symbol.fqn == "example.Checkout.start")
+            .expect("moved java start symbol")
+            .id
+            .clone();
+        let moved_java_analysis = RepositoryAnalysis {
+            source_file_count: 1,
+            edges: resolve_calls(&moved_java_file.symbols, &moved_java_file.calls),
+            symbols: moved_java_file.symbols,
+            diagnostics: moved_java_file.diagnostics,
+        };
+        database
+            .replace_analysis("repo_analysis", "mno345", &moved_java_analysis)
+            .expect("moved java analysis persists");
+        assert_eq!(
+            database
+                .load_note("repo_analysis", &moved_java_start_symbol_id)
+                .expect("relinked note lookup")
+                .expect("moved Java note relinks")
+                .body_markdown,
+            "파일 이동 뒤에도 보존할 노트입니다."
         );
 
         drop(database);

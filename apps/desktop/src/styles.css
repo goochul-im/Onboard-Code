@@ -43,6 +43,10 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .symbol-row small { margin-top: .17rem; color: #94a5bc; font-size: .67rem; }
 .language-dot { width: 8px; height: 8px; margin-top: .3rem; border-radius: 50%; background: #8cb5ff; flex: 0 0 auto; }
 .language-dot.python { background: #7ed6c1; }
+.orphan-notes { margin-top: 1rem; border: 1px solid #635238; border-radius: 8px; padding: .62rem; color: #e4cf9e; font-size: .72rem; }
+.orphan-notes summary { cursor: pointer; font-weight: 700; }
+.orphan-notes p { margin: .55rem 0; color: #c6b88d; line-height: 1.45; }
+.orphan-notes ul { max-height: 88px; margin: 0; padding-left: 1rem; overflow: auto; }
 
 .graph-panel { display: flex; flex-direction: column; min-width: 0; padding: 1.25rem; background: radial-gradient(circle at 20% 5%, #1d2d49, #11151d 46%); }
 .panel-heading { justify-content: space-between; }

@@ -6,7 +6,9 @@ mod repository;
 use std::{fs, path::PathBuf, sync::Mutex};
 
 use analysis::IndexedSymbol;
-use database::{AnalysisSummary, Database, GraphData, NoteRecord, RepositoryRecord, SourceFile};
+use database::{
+    AnalysisSummary, Database, GraphData, NoteRecord, OrphanNote, RepositoryRecord, SourceFile,
+};
 use tauri::{Manager, State};
 
 pub struct AppState {
@@ -145,6 +147,19 @@ fn save_note(
 }
 
 #[tauri::command]
+fn list_orphan_notes(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<OrphanNote>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .list_orphan_notes(&repository_id)
+        .map_err(|error| format!("연결이 끊긴 노트를 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
 fn read_source(
     repository_id: String,
     symbol_id: String,
@@ -210,6 +225,7 @@ pub fn run() {
             get_graph,
             get_note,
             save_note,
+            list_orphan_notes,
             read_source
         ])
         .run(tauri::generate_context!())

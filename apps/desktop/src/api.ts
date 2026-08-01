@@ -3,6 +3,7 @@ import type {
   AnalysisSummary,
   GraphData,
   NoteRecord,
+  OrphanNote,
   RepositoryRecord,
   SourceFile,
   SymbolRecord,
@@ -27,6 +28,8 @@ export const api = {
       bodyMarkdown,
       tags,
     }),
+  listOrphanNotes: (repositoryId: string) =>
+    invoke<OrphanNote[]>("list_orphan_notes", { repositoryId }),
   readSource: (repositoryId: string, symbolId: string) =>
     invoke<SourceFile>("read_source", { repositoryId, symbolId }),
 };

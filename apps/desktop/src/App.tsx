@@ -5,6 +5,7 @@ import { CallGraph } from "./components/CallGraph";
 import type {
   AnalysisSummary,
   GraphData,
+  OrphanNote,
   RepositoryRecord,
   SourceFile,
   SymbolRecord,
@@ -22,6 +23,7 @@ function App() {
   const [tagsInput, setTagsInput] = useState("");
   const [depth, setDepth] = useState(1);
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
+  const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
 
@@ -34,6 +36,11 @@ function App() {
     const nextSymbols = await api.searchSymbols(targetRepositoryId, targetQuery);
     setSymbols(nextSymbols);
     return nextSymbols;
+  }, []);
+
+  const loadOrphanNotes = useCallback(async (targetRepositoryId: string) => {
+    const items = await api.listOrphanNotes(targetRepositoryId);
+    setOrphanNotes(items);
   }, []);
 
   useEffect(() => {
@@ -61,6 +68,16 @@ function App() {
     }, 120);
     return () => window.clearTimeout(timeout);
   }, [repositoryId, query, loadSymbols]);
+
+  useEffect(() => {
+    if (!repositoryId) {
+      setOrphanNotes([]);
+      return;
+    }
+    void loadOrphanNotes(repositoryId).catch((error: unknown) =>
+      setNotice(`연결이 끊긴 노트를 읽지 못했습니다: ${String(error)}`),
+    );
+  }, [repositoryId, loadOrphanNotes]);
 
   const selectSymbol = useCallback(
     async (symbolId: string) => {
@@ -134,6 +151,7 @@ function App() {
       const summary = await api.analyzeRepository(repositoryId);
       setAnalysis(summary);
       const nextSymbols = await loadSymbols(repositoryId, query);
+      await loadOrphanNotes(repositoryId);
       setNotice(
         `${summary.sourceFileCount}개 파일에서 ${summary.symbolCount}개 함수를 분석했습니다.${
           summary.diagnosticCount > 0 ? ` 확인할 진단 ${summary.diagnosticCount}건이 있습니다.` : ""
@@ -248,6 +266,19 @@ function App() {
             ))}
             {repositoryId && symbols.length === 0 && <p className="muted">분석 후 함수를 검색할 수 있습니다.</p>}
           </div>
+          {orphanNotes.length > 0 && (
+            <details className="orphan-notes">
+              <summary>연결 필요 노트 {orphanNotes.length}개</summary>
+              <p>삭제하지 않았습니다. 함수가 이름 변경·삭제되어 다시 연결할 수 없는 노트입니다.</p>
+              <ul>
+                {orphanNotes.map((note) => (
+                  <li key={`${note.symbolFqn}-${note.updatedAt}`}>
+                    <code>{note.symbolFqn}{note.symbolSignature}</code>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </aside>
 
         <section className="graph-panel" aria-label="호출 관계">

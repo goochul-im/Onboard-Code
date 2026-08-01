@@ -52,6 +52,13 @@ export interface NoteRecord {
   bodyMarkdown: string;
   tags: string[];
   updatedAt: string;
+  status: "linked" | "orphan";
+}
+
+export interface OrphanNote {
+  symbolFqn: string;
+  symbolSignature: string;
+  updatedAt: string;
 }
 
 export interface SourceFile {
