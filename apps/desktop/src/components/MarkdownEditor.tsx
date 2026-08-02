@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 
 interface MarkdownEditorProps {
   value: string;
@@ -12,7 +12,11 @@ interface MarkdownEditorProps {
 
 type EditorMode = "write" | "preview";
 
-export function MarkdownEditor({
+export interface MarkdownEditorHandle {
+  insertAtCursor: (text: string) => void;
+}
+
+export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({
   value,
   tags,
   disabled,
@@ -20,34 +24,64 @@ export function MarkdownEditor({
   onChange,
   onTagsChange,
   onSave,
-}: MarkdownEditorProps) {
+}, ref) {
   const [mode, setMode] = useState<EditorMode>("write");
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const valueRef = useRef(value);
+  const selection = useRef({ start: value.length, end: value.length });
+  valueRef.current = value;
 
-  const wrapSelection = (prefix: string, suffix = prefix, placeholder = "텍스트") => {
+  const updateValue = (nextValue: string) => {
+    valueRef.current = nextValue;
+    onChange(nextValue);
+  };
+
+  const rememberSelection = () => {
     const element = textarea.current;
-    const start = element?.selectionStart ?? value.length;
-    const end = element?.selectionEnd ?? start;
-    const selected = value.slice(start, end) || placeholder;
-    const next = `${value.slice(0, start)}${prefix}${selected}${suffix}${value.slice(end)}`;
-    onChange(next);
+    if (element) {
+      selection.current = { start: element.selectionStart, end: element.selectionEnd };
+    }
+  };
 
+  const focusAt = (position: number) => {
     requestAnimationFrame(() => {
       textarea.current?.focus();
-      textarea.current?.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+      textarea.current?.setSelectionRange(position, position);
+      selection.current = { start: position, end: position };
+    });
+  };
+
+  const wrapSelection = (prefix: string, suffix = prefix, placeholder = "텍스트") => {
+    rememberSelection();
+    const { start, end } = selection.current;
+    const selected = valueRef.current.slice(start, end) || placeholder;
+    const next = `${valueRef.current.slice(0, start)}${prefix}${selected}${suffix}${valueRef.current.slice(end)}`;
+    updateValue(next);
+    const selectionEnd = start + prefix.length + selected.length;
+    requestAnimationFrame(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(start + prefix.length, selectionEnd);
+      selection.current = { start: start + prefix.length, end: selectionEnd };
     });
   };
 
   const prefixCurrentLine = (prefix: string) => {
-    const element = textarea.current;
-    const selectionStart = element?.selectionStart ?? value.length;
-    const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
-    onChange(`${value.slice(0, lineStart)}${prefix}${value.slice(lineStart)}`);
-    requestAnimationFrame(() => {
-      textarea.current?.focus();
-      textarea.current?.setSelectionRange(selectionStart + prefix.length, selectionStart + prefix.length);
-    });
+    rememberSelection();
+    const selectionStart = selection.current.start;
+    const lineStart = valueRef.current.lastIndexOf("\n", selectionStart - 1) + 1;
+    updateValue(`${valueRef.current.slice(0, lineStart)}${prefix}${valueRef.current.slice(lineStart)}`);
+    focusAt(selectionStart + prefix.length);
   };
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor: (text: string) => {
+      const { start, end } = selection.current;
+      const next = `${valueRef.current.slice(0, start)}${text}${valueRef.current.slice(end)}`;
+      updateValue(next);
+      setMode("write");
+      focusAt(start + text.length);
+    },
+  }));
 
   return (
     <section className="markdown-editor" aria-label="Markdown 노트 편집기">
@@ -95,7 +129,14 @@ export function MarkdownEditor({
           ref={textarea}
           className="markdown-input"
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            updateValue(event.target.value);
+            rememberSelection();
+          }}
+          onSelect={rememberSelection}
+          onKeyUp={rememberSelection}
+          onClick={rememberSelection}
+          onBlur={rememberSelection}
           placeholder={"## 이 함수의 역할\n\n- 입력과 출력\n- 호출 순서\n- 주의할 점"}
           disabled={disabled}
           aria-label="Markdown으로 함수 설명 작성"
@@ -114,7 +155,7 @@ export function MarkdownEditor({
       />
     </section>
   );
-}
+});
 
 function MarkdownPreview({ value }: { value: string }) {
   if (!value.trim()) {

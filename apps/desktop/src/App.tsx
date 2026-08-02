@@ -1,8 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
-import { MarkdownEditor } from "./components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import type {
   AnalysisSummary,
   GraphData,
@@ -11,6 +11,11 @@ import type {
   SourceFile,
   SymbolRecord,
 } from "./types";
+
+interface LineRange {
+  start: number;
+  end: number;
+}
 
 function App() {
   const [repositories, setRepositories] = useState<RepositoryRecord[]>([]);
@@ -26,9 +31,13 @@ function App() {
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
   const [activeView, setActiveView] = useState<"graph" | "detail">("graph");
+  const [lineReferenceRange, setLineReferenceRange] = useState<LineRange | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
   const selectedCodeLine = useRef<HTMLElement | null>(null);
+  const markdownEditor = useRef<MarkdownEditorHandle>(null);
+  const sourceDragStart = useRef<number | null>(null);
+  const sourceDragEnd = useRef<number | null>(null);
 
   const repository = useMemo(
     () => repositories.find((item) => item.id === repositoryId) ?? null,
@@ -103,6 +112,7 @@ function App() {
         setSourceFile(nextSource);
         setNoteBody(nextNote?.bodyMarkdown ?? "");
         setTagsInput(nextNote?.tags.join(", ") ?? "");
+        setLineReferenceRange(null);
         setNotice(`${symbol.fqn}을(를) 열었습니다.`);
       } catch (error) {
         setNotice(`함수를 열지 못했습니다: ${String(error)}`);
@@ -199,6 +209,72 @@ function App() {
 
   const sourceLines = sourceFile?.source.split("\n") ?? [];
   const unresolvedEdges = graph?.edges.filter((edge) => !edge.target) ?? [];
+
+  const lineNumberFromElement = (element: Element | null): number | null => {
+    const codeLine = element?.closest<HTMLElement>("code[data-line-number]");
+    const lineNumber = Number(codeLine?.dataset.lineNumber);
+    return Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : null;
+  };
+
+  const lineNumberAtPointer = (event: PointerEvent<HTMLPreElement>): number | null => {
+    const elementAtPointer = document.elementFromPoint(event.clientX, event.clientY);
+    if (elementAtPointer) {
+      return lineNumberFromElement(elementAtPointer);
+    }
+    return lineNumberFromElement(event.target instanceof Element ? event.target : null);
+  };
+
+  const normalizedLineRange = (start: number, end: number): LineRange => ({
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  });
+
+  const startSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
+    const lineNumber = lineNumberAtPointer(event);
+    if (!lineNumber) {
+      return;
+    }
+    event.preventDefault();
+    sourceDragStart.current = lineNumber;
+    sourceDragEnd.current = lineNumber;
+    setLineReferenceRange({ start: lineNumber, end: lineNumber });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updateSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
+    const start = sourceDragStart.current;
+    const lineNumber = lineNumberAtPointer(event);
+    if (!start || !lineNumber) {
+      return;
+    }
+    sourceDragEnd.current = lineNumber;
+    setLineReferenceRange(normalizedLineRange(start, lineNumber));
+  };
+
+  const finishSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
+    const start = sourceDragStart.current;
+    const end = lineNumberAtPointer(event) ?? sourceDragEnd.current;
+    sourceDragStart.current = null;
+    sourceDragEnd.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!start || !end) {
+      return;
+    }
+    const range = normalizedLineRange(start, end);
+    setLineReferenceRange(range);
+    const lineReference = range.start === range.end
+      ? `[line:${range.start}]`
+      : `[line:${range.start}-${range.end}]`;
+    markdownEditor.current?.insertAtCursor(lineReference);
+    setNotice(`${lineReference} 참조를 노트 커서 위치에 추가했습니다.`);
+  };
+
+  const cancelSourceLineSelection = () => {
+    sourceDragStart.current = null;
+    sourceDragEnd.current = null;
+  };
 
   return (
     <main className="workspace-shell">
@@ -348,15 +424,27 @@ function App() {
                   </div>
                   {sourceFile && <span>{sourceFile.startLine}–{sourceFile.endLine}행</span>}
                 </div>
+                <p className="source-selection-guide">줄을 클릭하면 <code>[line:31]</code>, 여러 줄을 드래그하면 <code>[line:31-35]</code> 참조를 노트 커서 위치에 넣습니다.</p>
                 {sourceFile ? (
-                  <pre className="code-preview full-source">
+                  <pre
+                    className="code-preview full-source selectable-source"
+                    aria-label="소스 코드. 한 줄을 클릭하거나 여러 줄을 드래그해 노트에 줄 참조를 추가할 수 있습니다."
+                    onPointerDown={startSourceLineSelection}
+                    onPointerMove={updateSourceLineSelection}
+                    onPointerUp={finishSourceLineSelection}
+                    onPointerCancel={cancelSourceLineSelection}
+                  >
                     {sourceLines.map((line, index) => {
                       const lineNumber = index + 1;
                       const isSelected = lineNumber >= sourceFile.startLine && lineNumber <= sourceFile.endLine;
+                      const isLineReference = lineReferenceRange
+                        && lineNumber >= lineReferenceRange.start
+                        && lineNumber <= lineReferenceRange.end;
                       return (
                         <code
                           ref={lineNumber === sourceFile.startLine ? selectedCodeLine : null}
-                          className={isSelected ? "code-line selected" : "code-line"}
+                          className={`code-line${isSelected ? " selected" : ""}${isLineReference ? " line-reference" : ""}`}
+                          data-line-number={lineNumber}
                           key={`${lineNumber}-${line}`}
                         >
                           <span>{String(lineNumber).padStart(4, " ")}</span>{line || " "}
@@ -367,6 +455,8 @@ function App() {
                 ) : <p className="muted">그래프에서 함수를 선택한 뒤 상세 화면을 여세요.</p>}
               </section>
               <MarkdownEditor
+                key={selectedSymbol?.id ?? "no-symbol"}
+                ref={markdownEditor}
                 value={noteBody}
                 tags={tagsInput}
                 disabled={!selectedSymbol}
