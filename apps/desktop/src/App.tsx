@@ -1,7 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
+import { MarkdownEditor } from "./components/MarkdownEditor";
 import type {
   AnalysisSummary,
   GraphData,
@@ -24,8 +25,10 @@ function App() {
   const [depth, setDepth] = useState(1);
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
+  const [activeView, setActiveView] = useState<"graph" | "detail">("graph");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
+  const selectedCodeLine = useRef<HTMLElement | null>(null);
 
   const repository = useMemo(
     () => repositories.find((item) => item.id === repositoryId) ?? null,
@@ -116,6 +119,12 @@ function App() {
     }
   }, [depth]); // depth changes intentionally reload the selected graph
 
+  useEffect(() => {
+    if (activeView === "detail" && sourceFile) {
+      selectedCodeLine.current?.scrollIntoView({ block: "center" });
+    }
+  }, [activeView, sourceFile]);
+
   const chooseRepository = async () => {
     const path = await open({
       directory: true,
@@ -134,6 +143,7 @@ function App() {
       setGraph(null);
       setSourceFile(null);
       setAnalysis(null);
+      setActiveView("graph");
       setNotice(`${nextRepository.displayName}을(를) 등록했습니다. 분석을 실행하세요.`);
     } catch (error) {
       setNotice(`저장소를 등록하지 못했습니다: ${String(error)}`);
@@ -188,8 +198,6 @@ function App() {
   };
 
   const sourceLines = sourceFile?.source.split("\n") ?? [];
-  const firstSourceLine = Math.max((sourceFile?.startLine ?? 1) - 7, 1);
-  const lastSourceLine = Math.min((sourceFile?.endLine ?? 1) + 8, sourceLines.length);
   const unresolvedEdges = graph?.edges.filter((edge) => !edge.target) ?? [];
 
   return (
@@ -222,6 +230,7 @@ function App() {
               setSelectedSymbol(null);
               setGraph(null);
               setSourceFile(null);
+              setActiveView("graph");
             }}
           >
             <option value="">저장소를 선택하세요</option>
@@ -281,85 +290,94 @@ function App() {
           )}
         </aside>
 
-        <section className="graph-panel" aria-label="호출 관계">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">CALL GRAPH</p>
-              <h2>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
-            </div>
-            <label className="depth-control">
-              펼칠 깊이
-              <select value={depth} onChange={(event) => setDepth(Number(event.target.value))} disabled={!selectedSymbol}>
-                <option value={1}>1단계</option>
-                <option value={2}>2단계</option>
-                <option value={3}>3단계</option>
-              </select>
-            </label>
-          </div>
-          <CallGraph graph={graph} selectedSymbolId={selectedSymbol?.id ?? null} onSelectSymbol={(id) => void selectSymbol(id)} />
-          {unresolvedEdges.length > 0 && (
-            <div className="uncertain-calls">
-              <strong>확정할 수 없는 호출</strong>
-              <ul>
-                {unresolvedEdges.map((edge) => (
-                  <li key={edge.id}>
-                    <code>{edge.unresolvedName}</code> · {edge.confidence === "ambiguous" ? "후보가 여러 개" : "대상을 찾지 못함"}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-
-        <aside className="detail-panel">
-          <section className="detail-section code-section">
-            <div className="panel-heading compact">
-              <div>
-                <p className="eyebrow">SOURCE</p>
-                <h2>{sourceFile?.relativePath ?? "소스 미리보기"}</h2>
+        {activeView === "graph" ? (
+          <section className="graph-panel" aria-label="호출 관계">
+            <div className="panel-heading">
+              <div className="panel-title">
+                <p className="eyebrow">CALL GRAPH</p>
+                <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
+              </div>
+              <div className="graph-actions">
+                <label className="depth-control">
+                  펼칠 깊이
+                  <select value={depth} onChange={(event) => setDepth(Number(event.target.value))} disabled={!selectedSymbol}>
+                    <option value={1}>1단계</option>
+                    <option value={2}>2단계</option>
+                    <option value={3}>3단계</option>
+                  </select>
+                </label>
+                <button
+                  className="secondary-button small"
+                  onClick={() => setActiveView("detail")}
+                  disabled={!selectedSymbol || !sourceFile}
+                >
+                  소스·노트 열기
+                </button>
               </div>
             </div>
-            {sourceFile ? (
-              <pre className="code-preview">
-                {sourceLines.slice(firstSourceLine - 1, lastSourceLine).map((line, index) => {
-                  const lineNumber = firstSourceLine + index;
-                  const isSelected = lineNumber >= sourceFile.startLine && lineNumber <= sourceFile.endLine;
-                  return (
-                    <code className={isSelected ? "code-line selected" : "code-line"} key={`${lineNumber}-${line}`}>
-                      <span>{String(lineNumber).padStart(4, " ")}</span>{line || " "}
-                    </code>
-                  );
-                })}
-              </pre>
-            ) : <p className="muted">그래프의 함수를 선택하면 코드 위치를 표시합니다.</p>}
-          </section>
-
-          <section className="detail-section note-section">
-            <div className="panel-heading compact">
-              <div>
-                <p className="eyebrow">YOUR NOTE</p>
-                <h2>직접 작성한 설명</h2>
+            <p className="graph-guide">노드를 선택해 그래프의 중심을 바꾸고, 소스·노트 열기에서 함수 상세를 확인하세요.</p>
+            <CallGraph graph={graph} selectedSymbolId={selectedSymbol?.id ?? null} onSelectSymbol={(id) => void selectSymbol(id)} />
+            {unresolvedEdges.length > 0 && (
+              <div className="uncertain-calls">
+                <strong>확정할 수 없는 호출</strong>
+                <ul>
+                  {unresolvedEdges.map((edge) => (
+                    <li key={edge.id}>
+                      <code>{edge.unresolvedName}</code> · {edge.confidence === "ambiguous" ? "후보가 여러 개" : "대상을 찾지 못함"}
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <button className="primary-button small" onClick={() => void saveNote()} disabled={!selectedSymbol || busy}>저장</button>
-            </div>
-            <label className="sr-only" htmlFor="note-body">함수 설명</label>
-            <textarea
-              id="note-body"
-              value={noteBody}
-              onChange={(event) => setNoteBody(event.target.value)}
-              placeholder="이 함수가 왜 존재하는지, 입력과 출력, 주의할 점을 직접 기록하세요."
-              disabled={!selectedSymbol}
-            />
-            <label className="field-label" htmlFor="note-tags">태그</label>
-            <input
-              id="note-tags"
-              value={tagsInput}
-              onChange={(event) => setTagsInput(event.target.value)}
-              placeholder="예: 핵심 흐름, 인증, 개선 필요"
-              disabled={!selectedSymbol}
-            />
+            )}
           </section>
-        </aside>
+        ) : (
+          <section className="detail-view" aria-label="함수 상세">
+            <header className="detail-view-header">
+              <button className="secondary-button small" onClick={() => setActiveView("graph")}>← 그래프로 돌아가기</button>
+              <div className="detail-title">
+                <p className="eyebrow">FUNCTION DETAIL</p>
+                <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수 상세"}</h2>
+              </div>
+            </header>
+            <div className="detail-workspace">
+              <section className="source-workspace">
+                <div className="source-heading">
+                  <div>
+                    <p className="eyebrow">SOURCE</p>
+                    <h3>{sourceFile?.relativePath ?? "소스 미리보기"}</h3>
+                  </div>
+                  {sourceFile && <span>{sourceFile.startLine}–{sourceFile.endLine}행</span>}
+                </div>
+                {sourceFile ? (
+                  <pre className="code-preview full-source">
+                    {sourceLines.map((line, index) => {
+                      const lineNumber = index + 1;
+                      const isSelected = lineNumber >= sourceFile.startLine && lineNumber <= sourceFile.endLine;
+                      return (
+                        <code
+                          ref={lineNumber === sourceFile.startLine ? selectedCodeLine : null}
+                          className={isSelected ? "code-line selected" : "code-line"}
+                          key={`${lineNumber}-${line}`}
+                        >
+                          <span>{String(lineNumber).padStart(4, " ")}</span>{line || " "}
+                        </code>
+                      );
+                    })}
+                  </pre>
+                ) : <p className="muted">그래프에서 함수를 선택한 뒤 상세 화면을 여세요.</p>}
+              </section>
+              <MarkdownEditor
+                value={noteBody}
+                tags={tagsInput}
+                disabled={!selectedSymbol}
+                isSaving={busy}
+                onChange={setNoteBody}
+                onTagsChange={setTagsInput}
+                onSave={() => void saveNote()}
+              />
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );

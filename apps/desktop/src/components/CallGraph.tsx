@@ -29,7 +29,8 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
           ...graph.nodes.map((node) => ({
             data: {
               id: node.id,
-              label: `${node.fqn}\n${node.signature}`,
+              label: formatNodeLabel(node.fqn),
+              fullLabel: `${node.fqn}${node.signature}`,
               language: node.language,
             },
             classes: node.id === selectedSymbolId ? "selected" : "",
@@ -55,14 +56,14 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
             "border-width": 1,
             color: "#f2f5fb",
             label: "data(label)",
-            "font-size": 10,
+            "font-size": 11,
             "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
             "text-wrap": "wrap",
-            "text-max-width": "154px",
+            "text-max-width": "166px",
             "text-valign": "center",
             "text-halign": "center",
-            width: 174,
-            height: 66,
+            width: 196,
+            height: 84,
             shape: "round-rectangle",
           },
         },
@@ -129,4 +130,34 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
   }
 
   return <div ref={container} className="call-graph" aria-label="함수 호출 그래프" />;
+}
+
+function formatNodeLabel(fqn: string): string {
+  const parts = fqn.split(".");
+  const owner = parts.length > 1 ? parts.at(-2) ?? "" : "함수";
+  const method = parts.at(-1) ?? fqn;
+  const methodLines = wrapIdentifier(method, 18).slice(0, 2);
+  return [truncate(owner, 21), ...methodLines].filter(Boolean).join("\n");
+}
+
+function wrapIdentifier(value: string, maxLength: number): string[] {
+  const words = value.match(/[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+/g) ?? [value];
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    if (line && line.length + word.length > maxLength) {
+      lines.push(line);
+      line = word;
+    } else {
+      line += word;
+    }
+  }
+  if (line) {
+    lines.push(line);
+  }
+  return lines.length > 2 ? [lines[0], `${lines[1]}…`] : lines;
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
