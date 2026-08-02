@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
+import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
 import type {
   AnalysisSummary,
   GraphData,
@@ -207,7 +208,10 @@ function App() {
     }
   };
 
-  const sourceLines = sourceFile?.source.split("\n") ?? [];
+  const syntaxLines = useMemo(
+    () => sourceFile ? tokenizeSource(sourceFile.source, detectSourceLanguage(sourceFile.relativePath)) : [],
+    [sourceFile],
+  );
   const unresolvedEdges = graph?.edges.filter((edge) => !edge.target) ?? [];
 
   const lineNumberFromElement = (element: Element | null): number | null => {
@@ -434,7 +438,7 @@ function App() {
                     onPointerUp={finishSourceLineSelection}
                     onPointerCancel={cancelSourceLineSelection}
                   >
-                    {sourceLines.map((line, index) => {
+                    {syntaxLines.map((tokens, index) => {
                       const lineNumber = index + 1;
                       const isSelected = lineNumber >= sourceFile.startLine && lineNumber <= sourceFile.endLine;
                       const isLineReference = lineReferenceRange
@@ -445,9 +449,14 @@ function App() {
                           ref={lineNumber === sourceFile.startLine ? selectedCodeLine : null}
                           className={`code-line${isSelected ? " selected" : ""}${isLineReference ? " line-reference" : ""}`}
                           data-line-number={lineNumber}
-                          key={`${lineNumber}-${line}`}
+                          key={lineNumber}
                         >
-                          <span>{String(lineNumber).padStart(4, " ")}</span>{line || " "}
+                          <span className="line-number">{String(lineNumber).padStart(4, " ")}</span>
+                          {tokens.length > 0 ? tokens.map((token, tokenIndex) => (
+                            <span className={`syntax-token token-${token.kind}`} key={`${tokenIndex}-${token.text}`}>
+                              {token.text}
+                            </span>
+                          )) : " "}
                         </code>
                       );
                     })}

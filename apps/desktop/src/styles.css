@@ -74,7 +74,14 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .code-preview.full-source { flex: 1; min-height: 500px; max-height: calc(100vh - 270px); }
 .selectable-source { cursor: crosshair; user-select: none; touch-action: none; }
 .code-line { display: block; min-width: max-content; min-height: 1.62em; padding: 0 .75rem; white-space: pre; }
-.code-line span { display: inline-block; width: 3.7rem; margin-right: .75rem; color: #62718a; user-select: none; }
+.code-line > .line-number { display: inline-block; width: 3.7rem; margin-right: .75rem; color: #62718a; user-select: none; }
+.syntax-token.token-annotation { color: #61afef; }
+.syntax-token.token-comment { color: #6f7b90; font-style: italic; }
+.syntax-token.token-function { color: #61afef; }
+.syntax-token.token-keyword { color: #c678dd; font-style: italic; }
+.syntax-token.token-number { color: #d19a66; }
+.syntax-token.token-string { color: #98c379; }
+.syntax-token.token-type { color: #e5c07b; }
 .code-line.selected { background: #23395a; color: #f4f8ff; box-shadow: inset 3px 0 #8cb5ff; }
 .code-line.line-reference { background: #21453f; color: #effff9; box-shadow: inset 3px 0 #79d4c0; }
 .code-line.selected.line-reference { background: linear-gradient(90deg, #21453f, #23395a); box-shadow: inset 3px 0 #f5c979; }
