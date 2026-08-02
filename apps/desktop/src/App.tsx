@@ -348,7 +348,7 @@ function App() {
               >
                 <span className={`language-dot ${symbol.language}`} />
                 <span>
-                  <strong>{symbol.fqn}</strong>
+                  <strong title={symbol.fqn}>{compactSymbolName(symbol.fqn)}</strong>
                   <small>{symbol.relativePath}:{symbol.startLine}</small>
                 </span>
               </button>
@@ -480,6 +480,11 @@ function App() {
       </div>
     </main>
   );
+}
+
+function compactSymbolName(fqn: string): string {
+  const parts = fqn.split(".").filter(Boolean);
+  return parts.length > 1 ? parts.slice(-2).join(".") : fqn;
 }
 
 export default App;
