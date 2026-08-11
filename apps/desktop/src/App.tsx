@@ -7,6 +7,7 @@ import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlig
 import type {
   AnalysisSummary,
   GraphData,
+  NoteRecord,
   OrphanNote,
   RepositoryRecord,
   SourceFile,
@@ -18,6 +19,11 @@ interface LineRange {
   end: number;
 }
 
+interface NoteDraft extends NoteRecord {
+  tagsInput: string;
+  isDirty: boolean;
+}
+
 function App() {
   const [repositories, setRepositories] = useState<RepositoryRecord[]>([]);
   const [repositoryId, setRepositoryId] = useState<string | null>(null);
@@ -26,8 +32,8 @@ function App() {
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolRecord | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [sourceFile, setSourceFile] = useState<SourceFile | null>(null);
-  const [noteBody, setNoteBody] = useState("");
-  const [tagsInput, setTagsInput] = useState("");
+  const [notes, setNotes] = useState<NoteDraft[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const [depth, setDepth] = useState(1);
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
@@ -39,11 +45,46 @@ function App() {
   const markdownEditor = useRef<MarkdownEditorHandle>(null);
   const sourceDragStart = useRef<number | null>(null);
   const sourceDragEnd = useRef<number | null>(null);
+  const symbolRequestSequence = useRef(0);
 
   const repository = useMemo(
     () => repositories.find((item) => item.id === repositoryId) ?? null,
     [repositories, repositoryId],
   );
+  const selectedNote = useMemo(
+    () => notes.find((note) => note.id === selectedNoteId) ?? null,
+    [notes, selectedNoteId],
+  );
+
+  const updateSelectedNote = (update: (note: NoteDraft) => NoteDraft) => {
+    if (selectedNoteId === null) {
+      return;
+    }
+    setNotes((items) => items.map((note) => note.id === selectedNoteId
+      ? { ...update(note), isDirty: true }
+      : note));
+  };
+
+  const persistDirtyNotes = useCallback(async (
+    targetRepositoryId: string,
+    targetSymbolId: string,
+    drafts: NoteDraft[],
+  ) => {
+    for (const draft of drafts.filter((note) => note.isDirty)) {
+      const tags = draft.tagsInput
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+      await api.updateNote(
+        targetRepositoryId,
+        targetSymbolId,
+        draft.id,
+        draft.title,
+        draft.bodyMarkdown,
+        tags,
+      );
+    }
+  }, []);
 
   const loadSymbols = useCallback(async (targetRepositoryId: string, targetQuery: string) => {
     const nextSymbols = await api.searchSymbols(targetRepositoryId, targetQuery);
@@ -94,39 +135,63 @@ function App() {
 
   const selectSymbol = useCallback(
     async (symbolId: string) => {
-      if (!repositoryId) {
+      if (!repositoryId || busy) {
         return;
       }
+      const requestSequence = ++symbolRequestSequence.current;
       const symbol = symbols.find((item) => item.id === symbolId) ?? graph?.nodes.find((item) => item.id === symbolId);
       if (!symbol) {
         return;
       }
       setBusy(true);
       try {
-        const [nextGraph, nextSource, nextNote] = await Promise.all([
+        if (selectedSymbol) {
+          await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+        }
+        const [nextGraph, nextSource, nextNotes] = await Promise.all([
           api.getGraph(repositoryId, symbolId, depth),
           api.readSource(repositoryId, symbolId),
-          api.getNote(repositoryId, symbolId),
+          api.listNotes(repositoryId, symbolId),
         ]);
+        if (requestSequence !== symbolRequestSequence.current) {
+          return;
+        }
         setSelectedSymbol(symbol);
         setGraph(nextGraph);
         setSourceFile(nextSource);
-        setNoteBody(nextNote?.bodyMarkdown ?? "");
-        setTagsInput(nextNote?.tags.join(", ") ?? "");
+        const nextDrafts = nextNotes.map(toNoteDraft);
+        setNotes(nextDrafts);
+        setSelectedNoteId(nextDrafts[0]?.id ?? null);
         setLineReferenceRange(null);
         setNotice(`${symbol.fqn}을(를) 열었습니다.`);
       } catch (error) {
-        setNotice(`함수를 열지 못했습니다: ${String(error)}`);
+        if (requestSequence === symbolRequestSequence.current) {
+          setNotice(`함수를 열지 못했습니다: ${String(error)}`);
+        }
       } finally {
-        setBusy(false);
+        if (requestSequence === symbolRequestSequence.current) {
+          setBusy(false);
+        }
       }
     },
-    [depth, graph?.nodes, repositoryId, symbols],
+    [busy, depth, graph?.nodes, notes, persistDirtyNotes, repositoryId, selectedSymbol, symbols],
   );
 
   useEffect(() => {
-    if (selectedSymbol) {
-      void selectSymbol(selectedSymbol.id);
+    if (repositoryId && selectedSymbol) {
+      const requestSequence = ++symbolRequestSequence.current;
+      void api
+        .getGraph(repositoryId, selectedSymbol.id, depth)
+        .then((nextGraph) => {
+          if (requestSequence === symbolRequestSequence.current) {
+            setGraph(nextGraph);
+          }
+        })
+        .catch((error: unknown) => {
+          if (requestSequence === symbolRequestSequence.current) {
+            setNotice(`호출 그래프를 갱신하지 못했습니다: ${String(error)}`);
+          }
+        });
     }
   }, [depth]); // depth changes intentionally reload the selected graph
 
@@ -147,12 +212,18 @@ function App() {
     }
     setBusy(true);
     try {
+      if (repositoryId && selectedSymbol) {
+        await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+      }
+      symbolRequestSequence.current += 1;
       const nextRepository = await api.registerRepository(path);
       setRepositories((items) => [nextRepository, ...items.filter((item) => item.id !== nextRepository.id)]);
       setRepositoryId(nextRepository.id);
       setSelectedSymbol(null);
       setGraph(null);
       setSourceFile(null);
+      setNotes([]);
+      setSelectedNoteId(null);
       setAnalysis(null);
       setActiveView("graph");
       setNotice(`${nextRepository.displayName}을(를) 등록했습니다. 분석을 실행하세요.`);
@@ -169,6 +240,10 @@ function App() {
     }
     setBusy(true);
     try {
+      if (selectedSymbol) {
+        await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+        setNotes((items) => items.map((note) => ({ ...note, isDirty: false })));
+      }
       const summary = await api.analyzeRepository(repositoryId);
       setAnalysis(summary);
       const nextSymbols = await loadSymbols(repositoryId, query);
@@ -188,21 +263,70 @@ function App() {
     }
   };
 
+  const changeRepository = async (nextRepositoryId: string | null) => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      if (repositoryId && selectedSymbol) {
+        await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+      }
+      symbolRequestSequence.current += 1;
+      setRepositoryId(nextRepositoryId);
+      setSelectedSymbol(null);
+      setGraph(null);
+      setSourceFile(null);
+      setNotes([]);
+      setSelectedNoteId(null);
+      setActiveView("graph");
+    } catch (error) {
+      setNotice(`저장소를 바꾸기 전에 분석 문서를 저장하지 못했습니다: ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveNote = async () => {
+    if (!repositoryId || !selectedSymbol || !selectedNote) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const tags = selectedNote.tagsInput
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+      const note = await api.updateNote(
+        repositoryId,
+        selectedSymbol.id,
+        selectedNote.id,
+        selectedNote.title,
+        selectedNote.bodyMarkdown,
+        tags,
+      );
+      setNotes((items) => items.map((item) => item.id === note.id ? toNoteDraft(note) : item));
+      setNotice(`분석 문서를 저장했습니다. 마지막 수정 ${new Date(note.updatedAt).toLocaleString("ko-KR")}`);
+    } catch (error) {
+      setNotice(`분석 문서를 저장하지 못했습니다: ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createNote = async () => {
     if (!repositoryId || !selectedSymbol) {
       return;
     }
     setBusy(true);
     try {
-      const tags = tagsInput
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      const note = await api.saveNote(repositoryId, selectedSymbol.id, noteBody, tags);
-      setTagsInput(note.tags.join(", "));
-      setNotice(`노트를 저장했습니다. 마지막 수정 ${new Date(note.updatedAt).toLocaleString("ko-KR")}`);
+      const title = nextNoteTitle(notes);
+      const note = await api.createNote(repositoryId, selectedSymbol.id, title);
+      setNotes((items) => [toNoteDraft(note), ...items]);
+      setSelectedNoteId(note.id);
+      setNotice(`${note.title} 문서를 만들었습니다.`);
     } catch (error) {
-      setNotice(`노트를 저장하지 못했습니다: ${String(error)}`);
+      setNotice(`분석 문서를 만들지 못했습니다: ${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -271,6 +395,14 @@ function App() {
     const lineReference = range.start === range.end
       ? `[line:${range.start}]`
       : `[line:${range.start}-${range.end}]`;
+    if (!selectedNote) {
+      setNotice("먼저 새 분석 문서를 만든 뒤 줄 참조를 추가하세요.");
+      return;
+    }
+    if (busy) {
+      setNotice("현재 작업이 끝난 뒤 줄 참조를 추가하세요.");
+      return;
+    }
     markdownEditor.current?.insertAtCursor(lineReference);
     setNotice(`${lineReference} 참조를 노트 커서 위치에 추가했습니다.`);
   };
@@ -305,13 +437,8 @@ function App() {
           <select
             id="repository-select"
             value={repositoryId ?? ""}
-            onChange={(event) => {
-              setRepositoryId(event.target.value || null);
-              setSelectedSymbol(null);
-              setGraph(null);
-              setSourceFile(null);
-              setActiveView("graph");
-            }}
+            onChange={(event) => void changeRepository(event.target.value || null)}
+            disabled={busy}
           >
             <option value="">저장소를 선택하세요</option>
             {repositories.map((item) => (
@@ -345,6 +472,7 @@ function App() {
                 className={`symbol-row ${selectedSymbol?.id === symbol.id ? "active" : ""}`}
                 key={symbol.id}
                 onClick={() => void selectSymbol(symbol.id)}
+                disabled={busy}
               >
                 <span className={`language-dot ${symbol.language}`} />
                 <span>
@@ -361,8 +489,8 @@ function App() {
               <p>삭제하지 않았습니다. 함수가 이름 변경·삭제되어 다시 연결할 수 없는 노트입니다.</p>
               <ul>
                 {orphanNotes.map((note) => (
-                  <li key={`${note.symbolFqn}-${note.updatedAt}`}>
-                    <code>{note.symbolFqn}{note.symbolSignature}</code>
+                  <li key={note.id}>
+                    <strong>{note.title}</strong> · <code>{note.symbolFqn}{note.symbolSignature}</code>
                   </li>
                 ))}
               </ul>
@@ -464,14 +592,21 @@ function App() {
                 ) : <p className="muted">그래프에서 함수를 선택한 뒤 상세 화면을 여세요.</p>}
               </section>
               <MarkdownEditor
-                key={selectedSymbol?.id ?? "no-symbol"}
+                key={selectedNote?.id ?? `no-note-${selectedSymbol?.id ?? "no-symbol"}`}
                 ref={markdownEditor}
-                value={noteBody}
-                tags={tagsInput}
-                disabled={!selectedSymbol}
+                documents={notes.map((note) => ({ id: note.id, title: note.title }))}
+                selectedDocumentId={selectedNoteId}
+                title={selectedNote?.title ?? ""}
+                value={selectedNote?.bodyMarkdown ?? ""}
+                tags={selectedNote?.tagsInput ?? ""}
+                disabled={!selectedNote}
+                canCreate={Boolean(selectedSymbol)}
                 isSaving={busy}
-                onChange={setNoteBody}
-                onTagsChange={setTagsInput}
+                onSelectDocument={setSelectedNoteId}
+                onCreateDocument={() => void createNote()}
+                onTitleChange={(title) => updateSelectedNote((note) => ({ ...note, title }))}
+                onChange={(bodyMarkdown) => updateSelectedNote((note) => ({ ...note, bodyMarkdown }))}
+                onTagsChange={(tagsInput) => updateSelectedNote((note) => ({ ...note, tagsInput }))}
                 onSave={() => void saveNote()}
               />
             </div>
@@ -485,6 +620,18 @@ function App() {
 function compactSymbolName(fqn: string): string {
   const parts = fqn.split(".").filter(Boolean);
   return parts.length > 1 ? parts.slice(-2).join(".") : fqn;
+}
+
+function toNoteDraft(note: NoteRecord): NoteDraft {
+  return { ...note, tagsInput: note.tags.join(", "), isDirty: false };
+}
+
+function nextNoteTitle(notes: NoteRecord[]): string {
+  let sequence = notes.length + 1;
+  while (notes.some((note) => note.title === `분석 ${sequence}`)) {
+    sequence += 1;
+  }
+  return `분석 ${sequence}`;
 }
 
 export default App;

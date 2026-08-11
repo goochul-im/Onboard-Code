@@ -87,12 +87,20 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .code-line.selected.line-reference { background: linear-gradient(90deg, #21453f, #23395a); box-shadow: inset 3px 0 #f5c979; }
 
 .markdown-editor { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 1.25rem; border-left: 1px solid #2b3445; background: #171d28; }
+.document-switcher { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; margin-top: 1rem; }
+.document-switcher select { min-width: 0; }
+.document-title-label { margin-top: .75rem; }
 .markdown-toolbar { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: 1rem; }
 .markdown-toolbar button, .markdown-mode-tabs button { border: 1px solid #3e4c63; border-radius: 6px; padding: .34rem .5rem; color: #cbd8ea; background: #1a2331; font-size: .72rem; }
 .markdown-toolbar button:hover:not(:disabled), .markdown-mode-tabs button.active { border-color: #8cb5ff; color: #edf4ff; background: #283a56; }
 .markdown-mode-tabs { display: flex; gap: .35rem; margin-top: .85rem; }
-.markdown-input, .markdown-preview { flex: 1; min-height: 280px; margin-top: .55rem; }
-.markdown-input { resize: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; line-height: 1.6; }
+.markdown-preview { flex: 1; min-height: 280px; margin-top: .55rem; }
+.markdown-live-surface { flex: 1; min-height: 280px; margin-top: .55rem; overflow: auto; border: 1px solid #3a465b; border-radius: 8px; padding: .65rem; background: #111722; }
+.markdown-live-surface.empty { display: grid; place-items: center; color: #8291a8; font-size: .82rem; }
+.markdown-live-block { border: 1px solid transparent; border-radius: 6px; padding: .25rem .35rem; cursor: text; }
+.markdown-live-block:hover, .markdown-live-block:focus-visible { border-color: #40516d; background: #172131; outline: none; }
+.markdown-live-block .markdown-preview { min-height: 0; margin: 0; overflow: visible; border: 0; padding: .2rem; background: transparent; }
+.markdown-live-input { width: 100%; min-height: 4.8em; margin: 0; resize: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; line-height: 1.6; }
 .markdown-preview { overflow: auto; border: 1px solid #3a465b; border-radius: 8px; padding: .75rem .85rem; color: #d7e0ed; background: #111722; font-size: .86rem; line-height: 1.65; }
 .markdown-preview.empty { display: grid; place-items: center; color: #8291a8; }
 .markdown-preview > :first-child { margin-top: 0; }
