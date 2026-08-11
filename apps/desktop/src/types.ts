@@ -48,7 +48,9 @@ export interface GraphData {
 }
 
 export interface NoteRecord {
+  id: number;
   symbolId: string;
+  title: string;
   bodyMarkdown: string;
   tags: string[];
   updatedAt: string;
@@ -56,6 +58,8 @@ export interface NoteRecord {
 }
 
 export interface OrphanNote {
+  id: number;
+  title: string;
   symbolFqn: string;
   symbolSignature: string;
   updatedAt: string;

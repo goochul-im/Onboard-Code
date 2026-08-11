@@ -19,8 +19,28 @@ export const api = {
     invoke<SymbolRecord[]>("search_symbols", { repositoryId, query }),
   getGraph: (repositoryId: string, rootSymbolId: string, depth: number) =>
     invoke<GraphData>("get_graph", { repositoryId, rootSymbolId, depth }),
+  listNotes: (repositoryId: string, symbolId: string) =>
+    invoke<NoteRecord[]>("list_notes", { repositoryId, symbolId }),
   getNote: (repositoryId: string, symbolId: string) =>
     invoke<NoteRecord | null>("get_note", { repositoryId, symbolId }),
+  createNote: (repositoryId: string, symbolId: string, title: string) =>
+    invoke<NoteRecord>("create_note", { repositoryId, symbolId, title }),
+  updateNote: (
+    repositoryId: string,
+    symbolId: string,
+    noteId: number,
+    title: string,
+    bodyMarkdown: string,
+    tags: string[],
+  ) =>
+    invoke<NoteRecord>("update_note", {
+      repositoryId,
+      symbolId,
+      noteId,
+      title,
+      bodyMarkdown,
+      tags,
+    }),
   saveNote: (repositoryId: string, symbolId: string, bodyMarkdown: string, tags: string[]) =>
     invoke<NoteRecord>("save_note", {
       repositoryId,

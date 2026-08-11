@@ -58,7 +58,9 @@ pub struct GraphEdge {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteRecord {
+    pub id: i64,
     pub symbol_id: String,
+    pub title: String,
     pub body_markdown: String,
     pub tags: Vec<String>,
     pub updated_at: String,
@@ -68,6 +70,8 @@ pub struct NoteRecord {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrphanNote {
+    pub id: i64,
+    pub title: String,
     pub symbol_fqn: String,
     pub symbol_signature: String,
     pub updated_at: String,
@@ -89,7 +93,7 @@ impl Database {
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         }
 
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.execute_batch(
             r#"
             PRAGMA foreign_keys = ON;
@@ -147,13 +151,16 @@ impl Database {
               symbol_id TEXT NOT NULL,
               symbol_fqn TEXT NOT NULL DEFAULT '',
               symbol_signature TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT '기본 분석',
               body_markdown TEXT NOT NULL DEFAULT '',
               tags_json TEXT NOT NULL DEFAULT '[]',
               status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'orphan')),
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(repository_id, symbol_id)
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE INDEX IF NOT EXISTS notes_symbol_lookup
+              ON notes(repository_id, symbol_id, status, updated_at DESC);
 
             CREATE TABLE IF NOT EXISTS graph_preferences (
               repository_id TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
@@ -171,7 +178,7 @@ impl Database {
             );
             "#,
         )?;
-        ensure_notes_columns(&connection)?;
+        ensure_notes_schema(&mut connection)?;
 
         Ok(Self { connection })
     }
@@ -432,28 +439,69 @@ impl Database {
         })
     }
 
-    pub fn load_note(
+    pub fn list_notes(
         &self,
         repository_id: &str,
         symbol_id: &str,
-    ) -> rusqlite::Result<Option<NoteRecord>> {
-        self.connection
-            .query_row(
-                r#"
-                SELECT symbol_id, body_markdown, tags_json, updated_at, status
-                FROM notes
-                WHERE repository_id = ?1 AND symbol_id = ?2
-                "#,
-                params![repository_id, symbol_id],
-                row_to_note,
-            )
-            .optional()
+    ) -> rusqlite::Result<Vec<NoteRecord>> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT id, symbol_id, title, body_markdown, tags_json, updated_at, status
+            FROM notes
+            WHERE repository_id = ?1 AND symbol_id = ?2 AND status = 'linked'
+            ORDER BY updated_at DESC, id DESC
+            "#,
+        )?;
+        let notes = statement
+            .query_map(params![repository_id, symbol_id], row_to_note)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(notes)
     }
 
-    pub fn save_note(
+    pub fn create_note(
         &mut self,
         repository_id: &str,
         symbol_id: &str,
+        title: &str,
+    ) -> rusqlite::Result<NoteRecord> {
+        let symbol = self
+            .symbol_by_id(repository_id, symbol_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO notes (
+              repository_id, symbol_id, symbol_fqn, symbol_signature, title, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'linked')
+            "#,
+            params![
+                repository_id,
+                symbol_id,
+                symbol.fqn,
+                symbol.signature,
+                title
+            ],
+        )?;
+        let note_id = transaction.last_insert_rowid();
+        transaction.execute(
+            r#"
+            INSERT INTO search_index (repository_id, entity_type, entity_id, title, content)
+            VALUES (?1, 'note', CAST(?2 AS TEXT), ?3, '')
+            "#,
+            params![repository_id, note_id, format!("{} {title}", symbol.fqn)],
+        )?;
+        transaction.commit()?;
+
+        self.load_note_by_id(repository_id, note_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn update_note(
+        &mut self,
+        repository_id: &str,
+        symbol_id: &str,
+        note_id: i64,
+        title: &str,
         body_markdown: &str,
         tags: &[String],
     ) -> rusqlite::Result<NoteRecord> {
@@ -463,49 +511,76 @@ impl Database {
             .symbol_by_id(repository_id, symbol_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let transaction = self.connection.transaction()?;
-        transaction.execute(
+        let changed = transaction.execute(
             r#"
-            INSERT INTO notes (
-              repository_id, symbol_id, symbol_fqn, symbol_signature, body_markdown, tags_json, status
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'linked')
-            ON CONFLICT(repository_id, symbol_id) DO UPDATE SET
-              symbol_fqn = excluded.symbol_fqn,
-              symbol_signature = excluded.symbol_signature,
-              body_markdown = excluded.body_markdown,
-              tags_json = excluded.tags_json,
-              status = 'linked',
-              updated_at = CURRENT_TIMESTAMP
+            UPDATE notes
+            SET symbol_fqn = ?1,
+                symbol_signature = ?2,
+                title = ?3,
+                body_markdown = ?4,
+                tags_json = ?5,
+                status = 'linked',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE repository_id = ?6 AND symbol_id = ?7 AND id = ?8
             "#,
             params![
-                repository_id,
-                symbol_id,
                 symbol.fqn,
                 symbol.signature,
+                title,
                 body_markdown,
-                tags_json
+                tags_json,
+                repository_id,
+                symbol_id,
+                note_id,
             ],
         )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         transaction.execute(
-            "DELETE FROM search_index WHERE repository_id = ?1 AND entity_type = 'note' AND entity_id = ?2",
-            params![repository_id, symbol_id],
+            "DELETE FROM search_index WHERE repository_id = ?1 AND entity_type = 'note' AND entity_id = CAST(?2 AS TEXT)",
+            params![repository_id, note_id],
         )?;
         transaction.execute(
             r#"
             INSERT INTO search_index (repository_id, entity_type, entity_id, title, content)
-            VALUES (?1, 'note', ?2, ?3, ?4)
+            VALUES (?1, 'note', CAST(?2 AS TEXT), ?3, ?4)
             "#,
-            params![repository_id, symbol_id, symbol.fqn, body_markdown],
+            params![
+                repository_id,
+                note_id,
+                format!("{} {title}", symbol.fqn),
+                body_markdown
+            ],
         )?;
         transaction.commit()?;
 
-        self.load_note(repository_id, symbol_id)?
+        self.load_note_by_id(repository_id, note_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    fn load_note_by_id(
+        &self,
+        repository_id: &str,
+        note_id: i64,
+    ) -> rusqlite::Result<Option<NoteRecord>> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT id, symbol_id, title, body_markdown, tags_json, updated_at, status
+                FROM notes
+                WHERE repository_id = ?1 AND id = ?2
+                "#,
+                params![repository_id, note_id],
+                row_to_note,
+            )
+            .optional()
     }
 
     pub fn list_orphan_notes(&self, repository_id: &str) -> rusqlite::Result<Vec<OrphanNote>> {
         let mut statement = self.connection.prepare(
             r#"
-            SELECT symbol_fqn, symbol_signature, updated_at
+            SELECT id, title, symbol_fqn, symbol_signature, updated_at
             FROM notes
             WHERE repository_id = ?1 AND status = 'orphan'
             ORDER BY updated_at DESC
@@ -514,9 +589,11 @@ impl Database {
         let results = statement
             .query_map([repository_id], |row| {
                 Ok(OrphanNote {
-                    symbol_fqn: row.get(0)?,
-                    symbol_signature: row.get(1)?,
-                    updated_at: row.get(2)?,
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    symbol_fqn: row.get(2)?,
+                    symbol_signature: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>();
@@ -726,24 +803,27 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSymbol> {
 }
 
 fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
-    let tags_json: String = row.get(2)?;
+    let tags_json: String = row.get(4)?;
     let tags = serde_json::from_str(&tags_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(NoteRecord {
-        symbol_id: row.get(0)?,
-        body_markdown: row.get(1)?,
+        id: row.get(0)?,
+        symbol_id: row.get(1)?,
+        title: row.get(2)?,
+        body_markdown: row.get(3)?,
         tags,
-        updated_at: row.get(3)?,
-        status: row.get(4)?,
+        updated_at: row.get(5)?,
+        status: row.get(6)?,
     })
 }
 
-fn ensure_notes_columns(connection: &Connection) -> rusqlite::Result<()> {
+fn ensure_notes_schema(connection: &mut Connection) -> rusqlite::Result<()> {
     let mut statement = connection.prepare("PRAGMA table_info(notes)")?;
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+    drop(statement);
     if !columns.contains("symbol_fqn") {
         connection.execute(
             "ALTER TABLE notes ADD COLUMN symbol_fqn TEXT NOT NULL DEFAULT ''",
@@ -773,6 +853,65 @@ fn ensure_notes_columns(connection: &Connection) -> rusqlite::Result<()> {
             ), '');
         "#,
     )?;
+
+    let table_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notes'",
+        [],
+        |row| row.get(0),
+    )?;
+    let normalized_sql = table_sql
+        .split_whitespace()
+        .collect::<String>()
+        .to_lowercase();
+    let requires_rebuild =
+        !columns.contains("title") || normalized_sql.contains("unique(repository_id,symbol_id)");
+    if requires_rebuild {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE notes_v2 (
+              id INTEGER PRIMARY KEY,
+              repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+              symbol_id TEXT NOT NULL,
+              symbol_fqn TEXT NOT NULL DEFAULT '',
+              symbol_signature TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT '기본 분석',
+              body_markdown TEXT NOT NULL DEFAULT '',
+              tags_json TEXT NOT NULL DEFAULT '[]',
+              status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'orphan')),
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO notes_v2 (
+              id, repository_id, symbol_id, symbol_fqn, symbol_signature, title,
+              body_markdown, tags_json, status, created_at, updated_at
+            )
+            SELECT id, repository_id, symbol_id, symbol_fqn, symbol_signature, '기본 분석',
+                   body_markdown, tags_json, status, created_at, updated_at
+            FROM notes;
+
+            DELETE FROM search_index WHERE entity_type = 'note';
+            DROP TABLE notes;
+            ALTER TABLE notes_v2 RENAME TO notes;
+            CREATE INDEX notes_symbol_lookup
+              ON notes(repository_id, symbol_id, status, updated_at DESC);
+
+            INSERT INTO search_index (repository_id, entity_type, entity_id, title, content)
+            SELECT repository_id, 'note', CAST(id AS TEXT), symbol_fqn || ' ' || title, body_markdown
+            FROM notes;
+            "#,
+        )?;
+        transaction.commit()?;
+    } else {
+        connection.execute(
+            r#"
+            CREATE INDEX IF NOT EXISTS notes_symbol_lookup
+              ON notes(repository_id, symbol_id, status, updated_at DESC)
+            "#,
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -825,6 +964,86 @@ mod tests {
         assert_eq!(database.list_repositories().unwrap().len(), 1);
 
         drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_a_legacy_note_to_a_titled_document_once() {
+        let path = temporary_database_path("legacy-note-migration");
+        let connection = Connection::open(&path).expect("legacy database opens");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE repositories (
+                  id TEXT PRIMARY KEY NOT NULL,
+                  root_path TEXT UNIQUE NOT NULL,
+                  display_name TEXT NOT NULL,
+                  branch TEXT NOT NULL,
+                  head TEXT NOT NULL,
+                  is_dirty INTEGER NOT NULL CHECK (is_dirty IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE notes (
+                  id INTEGER PRIMARY KEY,
+                  repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                  symbol_id TEXT NOT NULL,
+                  symbol_fqn TEXT NOT NULL DEFAULT '',
+                  symbol_signature TEXT NOT NULL DEFAULT '',
+                  body_markdown TEXT NOT NULL DEFAULT '',
+                  tags_json TEXT NOT NULL DEFAULT '[]',
+                  status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'orphan')),
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(repository_id, symbol_id)
+                );
+                INSERT INTO repositories (id, root_path, display_name, branch, head, is_dirty)
+                VALUES ('repo_legacy', '/tmp/legacy', 'legacy', 'main', 'abc123', 0);
+                INSERT INTO notes (
+                  id, repository_id, symbol_id, symbol_fqn, symbol_signature,
+                  body_markdown, tags_json, status, created_at, updated_at
+                ) VALUES (
+                  7, 'repo_legacy', 'symbol_legacy', 'example.Legacy.start', '()',
+                  '기존 분석 본문', '["기존"]', 'linked',
+                  '2026-01-01 10:00:00', '2026-01-02 11:00:00'
+                );
+                "#,
+            )
+            .expect("legacy schema is created");
+        drop(connection);
+
+        let database = Database::open(&path).expect("legacy database migrates");
+        let notes = database
+            .list_notes("repo_legacy", "symbol_legacy")
+            .expect("migrated note loads");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, 7);
+        assert_eq!(notes[0].title, "기본 분석");
+        assert_eq!(notes[0].body_markdown, "기존 분석 본문");
+        assert_eq!(notes[0].tags, ["기존"]);
+        assert_eq!(notes[0].updated_at, "2026-01-02 11:00:00");
+        let indexed_notes: u32 = database
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM search_index WHERE entity_type = 'note' AND entity_id = '7'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migrated note is indexed");
+        assert_eq!(indexed_notes, 1);
+        drop(database);
+
+        let reopened = Database::open(&path).expect("migrated database reopens");
+        assert_eq!(
+            reopened
+                .list_notes("repo_legacy", "symbol_legacy")
+                .expect("reopened notes load")
+                .len(),
+            1,
+            "reopening must not duplicate the migrated document"
+        );
+        drop(reopened);
         let _ = fs::remove_file(path);
     }
 
@@ -893,23 +1112,43 @@ mod tests {
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1);
 
+        let first_note = database
+            .create_note("repo_analysis", &start_symbol_id, "회원가입 흐름")
+            .expect("first note creates");
         let saved_note = database
-            .save_note(
+            .update_note(
                 "repo_analysis",
                 &start_symbol_id,
+                first_note.id,
+                "회원가입 흐름",
                 "이 함수는 분석을 시작합니다.",
                 &["핵심".into(), "테스트".into()],
             )
             .expect("note saves");
         assert_eq!(saved_note.tags, ["핵심", "테스트"]);
-        assert_eq!(
-            database
-                .load_note("repo_analysis", &start_symbol_id)
-                .expect("note loads")
-                .expect("note exists")
-                .body_markdown,
-            "이 함수는 분석을 시작합니다."
-        );
+        let second_note = database
+            .create_note("repo_analysis", &start_symbol_id, "재시도 흐름")
+            .expect("second note creates");
+        database
+            .update_note(
+                "repo_analysis",
+                &start_symbol_id,
+                second_note.id,
+                "재시도 흐름",
+                "실패 뒤 재시도할 때의 분석입니다.",
+                &[],
+            )
+            .expect("second note saves");
+        let notes = database
+            .list_notes("repo_analysis", &start_symbol_id)
+            .expect("notes load");
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|note| {
+            note.title == "회원가입 흐름" && note.body_markdown == "이 함수는 분석을 시작합니다."
+        }));
+        assert!(notes.iter().any(|note| {
+            note.title == "재시도 흐름" && note.body_markdown == "실패 뒤 재시도할 때의 분석입니다."
+        }));
 
         let deleted_analysis = RepositoryAnalysis {
             source_file_count: 0,
@@ -925,7 +1164,7 @@ mod tests {
                 .list_orphan_notes("repo_analysis")
                 .expect("orphan notes load")
                 .len(),
-            1
+            2
         );
 
         let moved_file = analyze_file(
@@ -955,13 +1194,13 @@ mod tests {
                 .list_orphan_notes("repo_analysis")
                 .expect("orphan notes load")
                 .len(),
-            1,
+            2,
             "a renamed FQN remains safely orphaned instead of silently reconnecting"
         );
         assert!(database
-            .load_note("repo_analysis", &moved_start_symbol_id)
+            .list_notes("repo_analysis", &moved_start_symbol_id)
             .expect("note lookup")
-            .is_none());
+            .is_empty());
 
         let java_file = analyze_file(
             SourceLanguage::Java,
@@ -985,10 +1224,15 @@ mod tests {
         database
             .replace_analysis("repo_analysis", "jkl012", &java_analysis)
             .expect("java analysis persists");
+        let java_note = database
+            .create_note("repo_analysis", &java_start_symbol_id, "결제 시작")
+            .expect("java note creates");
         database
-            .save_note(
+            .update_note(
                 "repo_analysis",
                 &java_start_symbol_id,
+                java_note.id,
+                "결제 시작",
                 "파일 이동 뒤에도 보존할 노트입니다.",
                 &[],
             )
@@ -1018,9 +1262,8 @@ mod tests {
             .expect("moved java analysis persists");
         assert_eq!(
             database
-                .load_note("repo_analysis", &moved_java_start_symbol_id)
-                .expect("relinked note lookup")
-                .expect("moved Java note relinks")
+                .list_notes("repo_analysis", &moved_java_start_symbol_id)
+                .expect("relinked note lookup")[0]
                 .body_markdown,
             "파일 이동 뒤에도 보존할 노트입니다."
         );

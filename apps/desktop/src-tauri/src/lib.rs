@@ -111,6 +111,20 @@ fn get_graph(
 }
 
 #[tauri::command]
+fn list_notes(
+    repository_id: String,
+    symbol_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<NoteRecord>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .list_notes(&repository_id, &symbol_id)
+        .map_err(|error| format!("분석 문서를 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
 fn get_note(
     repository_id: String,
     symbol_id: String,
@@ -120,8 +134,57 @@ fn get_note(
         .database
         .lock()
         .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
-        .load_note(&repository_id, &symbol_id)
-        .map_err(|error| format!("노트를 읽을 수 없습니다: {error}"))
+        .list_notes(&repository_id, &symbol_id)
+        .map(|notes| notes.into_iter().next())
+        .map_err(|error| format!("분석 문서를 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn create_note(
+    repository_id: String,
+    symbol_id: String,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<NoteRecord, String> {
+    let clean_title = clean_note_title(title);
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .create_note(&repository_id, &symbol_id, &clean_title)
+        .map_err(|error| format!("분석 문서를 만들 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn update_note(
+    repository_id: String,
+    symbol_id: String,
+    note_id: i64,
+    title: String,
+    body_markdown: String,
+    tags: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<NoteRecord, String> {
+    let clean_title = clean_note_title(title);
+    let clean_tags = tags
+        .into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| !tag.is_empty())
+        .take(20)
+        .collect::<Vec<_>>();
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .update_note(
+            &repository_id,
+            &symbol_id,
+            note_id,
+            &clean_title,
+            &body_markdown,
+            &clean_tags,
+        )
+        .map_err(|error| format!("분석 문서를 저장할 수 없습니다: {error}"))
 }
 
 #[tauri::command]
@@ -138,12 +201,40 @@ fn save_note(
         .filter(|tag| !tag.is_empty())
         .take(20)
         .collect::<Vec<_>>();
-    state
+    let mut database = state
         .database
         .lock()
-        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
-        .save_note(&repository_id, &symbol_id, &body_markdown, &clean_tags)
-        .map_err(|error| format!("노트를 저장할 수 없습니다: {error}"))
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?;
+    let note = database
+        .list_notes(&repository_id, &symbol_id)
+        .map_err(|error| format!("분석 문서를 읽을 수 없습니다: {error}"))?
+        .into_iter()
+        .next();
+    let note = match note {
+        Some(note) => note,
+        None => database
+            .create_note(&repository_id, &symbol_id, "기본 분석")
+            .map_err(|error| format!("분석 문서를 만들 수 없습니다: {error}"))?,
+    };
+    database
+        .update_note(
+            &repository_id,
+            &symbol_id,
+            note.id,
+            &note.title,
+            &body_markdown,
+            &clean_tags,
+        )
+        .map_err(|error| format!("분석 문서를 저장할 수 없습니다: {error}"))
+}
+
+fn clean_note_title(title: String) -> String {
+    let clean = title.trim().chars().take(80).collect::<String>();
+    if clean.is_empty() {
+        "새 분석".to_owned()
+    } else {
+        clean
+    }
 }
 
 #[tauri::command]
@@ -223,7 +314,10 @@ pub fn run() {
             analyze_repository,
             search_symbols,
             get_graph,
+            list_notes,
             get_note,
+            create_note,
+            update_note,
             save_note,
             list_orphan_notes,
             read_source
