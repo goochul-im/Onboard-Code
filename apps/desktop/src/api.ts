@@ -7,6 +7,10 @@ import type {
   RepositoryRecord,
   SourceFile,
   SymbolRecord,
+  RestorationRequest,
+  RestorationValidation,
+  WorkspaceSnapshot,
+  WorkspaceSnapshotRequest,
 } from "./types";
 
 export const api = {
@@ -52,4 +56,10 @@ export const api = {
     invoke<OrphanNote[]>("list_orphan_notes", { repositoryId }),
   readSource: (repositoryId: string, symbolId: string) =>
     invoke<SourceFile>("read_source", { repositoryId, symbolId }),
+  saveWorkspaceSnapshot: (request: WorkspaceSnapshotRequest) =>
+    invoke<WorkspaceSnapshot>("save_workspace_snapshot", { request }),
+  currentWorkspaceSnapshot: (repositoryId: string) =>
+    invoke<WorkspaceSnapshot | null>("current_workspace_snapshot", { repositoryId }),
+  validateRestorationReferences: (request: RestorationRequest) =>
+    invoke<RestorationValidation>("validate_restoration_references", { request }),
 };

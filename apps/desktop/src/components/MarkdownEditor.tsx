@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useImperativeHandle,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -29,6 +30,9 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void;
   onTagsChange: (value: string) => void;
   onSave: () => void;
+  initialSelection: { start: number; end: number } | null;
+  initialScrollTop: number;
+  onEditorStateChange: (selection: { start: number; end: number }, scrollTop: number) => void;
 }
 
 type EditorMode = "live" | "preview";
@@ -52,18 +56,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   onChange,
   onTagsChange,
   onSave,
+  initialSelection,
+  initialScrollTop,
+  onEditorStateChange,
 }, ref) {
   const [mode, setMode] = useState<EditorMode>("live");
-  const [activeOffset, setActiveOffset] = useState(value.length);
+  const [activeOffset, setActiveOffset] = useState(initialSelection?.start ?? value.length);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const liveSurface = useRef<HTMLDivElement>(null);
   const valueRef = useRef(value);
-  const selection = useRef({ start: value.length, end: value.length });
+  const selection = useRef(initialSelection ?? { start: value.length, end: value.length });
   valueRef.current = value;
   const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
   const activeBlock = findMarkdownBlock(blocks, activeOffset);
   const activeBlockStart = useRef(activeBlock.start);
   activeBlockStart.current = activeBlock.start;
   const editingDisabled = disabled || isSaving;
+
+  useEffect(() => {
+    if (liveSurface.current) liveSurface.current.scrollTop = initialScrollTop;
+  }, [initialScrollTop, selectedDocumentId]);
 
   const updateValue = (nextValue: string) => {
     valueRef.current = nextValue;
@@ -77,6 +89,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         start: activeBlockStart.current + element.selectionStart,
         end: activeBlockStart.current + element.selectionEnd,
       };
+      onEditorStateChange(selection.current, liveSurface.current?.scrollTop ?? initialScrollTop);
     }
   };
 
@@ -226,7 +239,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         disabled ? (
           <div className="markdown-live-surface empty">새 분석 문서를 만든 뒤 내용을 작성하세요.</div>
         ) : (
-          <div className="markdown-live-surface" aria-label="Markdown 라이브 편집기">
+          <div
+            ref={liveSurface}
+            className="markdown-live-surface"
+            aria-label="Markdown 라이브 편집기"
+            onScroll={(event) => onEditorStateChange(selection.current, event.currentTarget.scrollTop)}
+          >
             {blocks.map((block) => block.start === activeBlock.start ? (
               <textarea
                 ref={textarea}

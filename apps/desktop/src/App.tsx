@@ -2,9 +2,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
+import type { GraphViewport } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
-import { selectWorkspace } from "./workspaceContext";
+import {
+  parseWorkspaceState,
+  selectWorkspace,
+  serializeWorkspaceState,
+  workspaceDatabaseFormatVersion,
+  workspaceSnapshotSchemaVersion,
+} from "./workspaceContext";
 import { defaultWorkspace, workspaces, type Workspace } from "./workspaces";
 import type {
   AnalysisSummary,
@@ -40,11 +47,18 @@ function App() {
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(defaultWorkspace);
+  const [restoredRepositoryId, setRestoredRepositoryId] = useState<string | null>(null);
+  const [workspaceWritable, setWorkspaceWritable] = useState(false);
   const [lineReferenceRange, setLineReferenceRange] = useState<LineRange | null>(null);
+  const [graphViewport, setGraphViewport] = useState<GraphViewport | null>(null);
+  const [sourceScrollTop, setSourceScrollTop] = useState(0);
+  const [markdownSelection, setMarkdownSelection] = useState<{ start: number; end: number } | null>(null);
+  const [markdownScrollTop, setMarkdownScrollTop] = useState(0);
   const [pendingLineReference, setPendingLineReference] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
   const selectedCodeLine = useRef<HTMLElement | null>(null);
+  const sourcePreview = useRef<HTMLPreElement | null>(null);
   const markdownEditor = useRef<MarkdownEditorHandle>(null);
   const sourceDragStart = useRef<number | null>(null);
   const sourceDragEnd = useRef<number | null>(null);
@@ -100,6 +114,30 @@ function App() {
     setOrphanNotes(items);
   }, []);
 
+  const persistWorkspace = useCallback(async (targetRepositoryId: string) => {
+    await api.saveWorkspaceSnapshot({
+      schemaVersion: workspaceSnapshotSchemaVersion,
+      appVersion: "0.1.0",
+      databaseFormatVersion: workspaceDatabaseFormatVersion,
+      repositoryId: targetRepositoryId,
+      stateJson: serializeWorkspaceState({
+        version: 1,
+        activeWorkspace,
+        query,
+        depth,
+        selectedSymbol,
+        selectedNoteId,
+        noteDrafts: notes,
+        lineReferenceRange,
+        graphViewport,
+        sourceScrollTop,
+        markdownSelection,
+        markdownScrollTop,
+      }),
+    });
+  }, [activeWorkspace, depth, graphViewport, lineReferenceRange, markdownScrollTop,
+    markdownSelection, notes, query, selectedNoteId, selectedSymbol, sourceScrollTop]);
+
   useEffect(() => {
     void api
       .listRepositories()
@@ -114,7 +152,108 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!repositoryId) {
+    const targetRepository = repositories.find((item) => item.id === repositoryId);
+    if (!repositoryId || !targetRepository) {
+      setRestoredRepositoryId(null);
+      return;
+    }
+    let cancelled = false;
+    setRestoredRepositoryId(null);
+    setWorkspaceWritable(false);
+    void (async () => {
+      try {
+        const snapshot = await api.currentWorkspaceSnapshot(repositoryId);
+        if (!snapshot || cancelled) {
+          if (!cancelled) {
+            setWorkspaceWritable(true);
+            setRestoredRepositoryId(repositoryId);
+          }
+          return;
+        }
+        const restored = parseWorkspaceState(snapshot.stateJson);
+        if (!restored) {
+          setNotice("저장된 작업공간 상태가 호환되지 않아 새 화면으로 시작합니다. 분석 문서는 보존됩니다.");
+          setRestoredRepositoryId(repositoryId);
+          return;
+        }
+        setActiveWorkspace(restored.activeWorkspace);
+        setQuery(restored.query);
+        setDepth(restored.depth);
+        setLineReferenceRange(restored.lineReferenceRange);
+        setGraphViewport(restored.graphViewport);
+        setSourceScrollTop(restored.sourceScrollTop);
+        setMarkdownSelection(restored.markdownSelection);
+        setMarkdownScrollTop(restored.markdownScrollTop);
+        if (!restored.selectedSymbol) {
+          setWorkspaceWritable(true);
+          setRestoredRepositoryId(repositoryId);
+          return;
+        }
+        const validation = await api.validateRestorationReferences({
+          repositoryId,
+          rootPath: targetRepository.rootPath,
+          branch: targetRepository.branch,
+          head: targetRepository.head,
+          selectedSymbol: restored.selectedSymbol,
+        });
+        if (cancelled) return;
+        if (validation.symbolStatus !== "valid") {
+          setNotice(`${restored.selectedSymbol.fqn} 참조는 재확인이 필요합니다. 저장된 문맥은 유지했습니다.`);
+          setRestoredRepositoryId(repositoryId);
+          return;
+        }
+        const availableSymbols = await api.searchSymbols(repositoryId, restored.query);
+        const symbol = availableSymbols.find((item) => item.id === restored.selectedSymbol?.id)
+          ?? availableSymbols.find((item) => item.fqn === restored.selectedSymbol?.fqn
+            && item.signature === restored.selectedSymbol?.signature);
+        if (!symbol || cancelled) {
+          setNotice(`${restored.selectedSymbol.fqn} 참조는 재확인이 필요합니다. 저장된 문맥은 유지했습니다.`);
+          setRestoredRepositoryId(repositoryId);
+          return;
+        }
+        const [nextGraph, nextSource, savedNotes] = await Promise.all([
+          api.getGraph(repositoryId, symbol.id, restored.depth),
+          api.readSource(repositoryId, symbol.id),
+          api.listNotes(repositoryId, symbol.id),
+        ]);
+        if (cancelled) return;
+        const draftsById = new Map(restored.noteDrafts.map((draft) => [draft.id, draft]));
+        const restoredDrafts = savedNotes.map((note) => {
+          const draft = draftsById.get(note.id);
+          return draft && draft.symbolId === symbol.id ? draft : toNoteDraft(note);
+        });
+        setSymbols(availableSymbols);
+        setSelectedSymbol(symbol);
+        setGraph(nextGraph);
+        setSourceFile(nextSource);
+        setNotes(restoredDrafts);
+        setSelectedNoteId(restoredDrafts.some((note) => note.id === restored.selectedNoteId)
+          ? restored.selectedNoteId : restoredDrafts[0]?.id ?? null);
+        setNotice(`${symbol.fqn}의 마지막 분석 문맥을 복원했습니다.`);
+        setWorkspaceWritable(true);
+        setRestoredRepositoryId(repositoryId);
+      } catch (error) {
+        if (!cancelled) {
+          setNotice(`작업공간을 복원하지 못해 새 화면으로 시작합니다: ${String(error)}`);
+          setRestoredRepositoryId(repositoryId);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [repositories, repositoryId]);
+
+  useEffect(() => {
+    if (!repositoryId || restoredRepositoryId !== repositoryId || !workspaceWritable) return;
+    const timeout = window.setTimeout(() => {
+      void persistWorkspace(repositoryId).catch((error: unknown) =>
+        setNotice(`작업공간 자동 저장에 실패했습니다. 다시 시도할 수 있습니다: ${String(error)}`),
+      );
+    }, 400);
+    return () => window.clearTimeout(timeout);
+  }, [persistWorkspace, repositoryId, restoredRepositoryId, workspaceWritable]);
+
+  useEffect(() => {
+    if (!repositoryId || restoredRepositoryId !== repositoryId) {
       setSymbols([]);
       return;
     }
@@ -124,7 +263,7 @@ function App() {
       );
     }, 120);
     return () => window.clearTimeout(timeout);
-  }, [repositoryId, query, loadSymbols]);
+  }, [repositoryId, query, loadSymbols, restoredRepositoryId]);
 
   useEffect(() => {
     if (!repositoryId) {
@@ -166,6 +305,7 @@ function App() {
         setNotes(nextDrafts);
         setSelectedNoteId(nextDrafts[0]?.id ?? null);
         setLineReferenceRange(null);
+        setWorkspaceWritable(true);
         setNotice(`${symbol.fqn}을(를) 열었습니다.`);
       } catch (error) {
         if (requestSequence === symbolRequestSequence.current) {
@@ -200,9 +340,16 @@ function App() {
 
   useEffect(() => {
     if (activeWorkspace === "record" && sourceFile) {
-      selectedCodeLine.current?.scrollIntoView({ block: "center" });
+      if (sourcePreview.current && sourceScrollTop > 0) sourcePreview.current.scrollTop = sourceScrollTop;
+      else selectedCodeLine.current?.scrollIntoView({ block: "center" });
     }
-  }, [activeWorkspace, sourceFile]);
+  }, [activeWorkspace, sourceFile, sourceScrollTop]);
+
+  const rememberGraphViewport = useCallback((viewport: GraphViewport) => setGraphViewport(viewport), []);
+  const rememberMarkdownState = useCallback((selection: { start: number; end: number }, scrollTop: number) => {
+    setMarkdownSelection(selection);
+    setMarkdownScrollTop(scrollTop);
+  }, []);
 
   useEffect(() => {
     if (activeWorkspace === "record" && pendingLineReference && selectedNote && markdownEditor.current) {
@@ -224,6 +371,9 @@ function App() {
     try {
       if (repositoryId && selectedSymbol) {
         await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+      }
+      if (repositoryId && restoredRepositoryId === repositoryId) {
+        await persistWorkspace(repositoryId);
       }
       symbolRequestSequence.current += 1;
       const nextRepository = await api.registerRepository(path);
@@ -281,8 +431,13 @@ function App() {
       if (repositoryId && selectedSymbol) {
         await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
       }
+      if (repositoryId && restoredRepositoryId === repositoryId) {
+        await persistWorkspace(repositoryId);
+      }
       symbolRequestSequence.current += 1;
       setRepositoryId(nextRepositoryId);
+      setRestoredRepositoryId(null);
+      setWorkspaceWritable(false);
       setSelectedSymbol(null);
       setGraph(null);
       setSourceFile(null);
@@ -545,7 +700,13 @@ function App() {
               </div>
             </div>
             <p className="graph-guide">노드를 선택해 그래프의 중심을 바꾸고, 소스·노트 열기에서 함수 상세를 확인하세요.</p>
-            <CallGraph graph={graph} selectedSymbolId={selectedSymbol?.id ?? null} onSelectSymbol={(id) => void selectSymbol(id)} />
+            <CallGraph
+              graph={graph}
+              selectedSymbolId={selectedSymbol?.id ?? null}
+              onSelectSymbol={(id) => void selectSymbol(id)}
+              viewport={graphViewport}
+              onViewportChange={rememberGraphViewport}
+            />
             {unresolvedEdges.length > 0 && (
               <div className="uncertain-calls">
                 <strong>확정할 수 없는 호출</strong>
@@ -580,12 +741,14 @@ function App() {
                 <p className="source-selection-guide">줄을 클릭하면 <code>[line:31]</code>, 여러 줄을 드래그하면 <code>[line:31-35]</code> 참조를 노트 커서 위치에 넣습니다.</p>
                 {sourceFile ? (
                   <pre
+                    ref={sourcePreview}
                     className="code-preview full-source selectable-source"
                     aria-label="소스 코드. 한 줄을 클릭하거나 여러 줄을 드래그해 노트에 줄 참조를 추가할 수 있습니다."
                     onPointerDown={startSourceLineSelection}
                     onPointerMove={updateSourceLineSelection}
                     onPointerUp={finishSourceLineSelection}
                     onPointerCancel={cancelSourceLineSelection}
+                    onScroll={(event) => setSourceScrollTop(event.currentTarget.scrollTop)}
                   >
                     {syntaxLines.map((tokens, index) => {
                       const lineNumber = index + 1;
@@ -629,6 +792,9 @@ function App() {
                 onChange={(bodyMarkdown) => updateSelectedNote((note) => ({ ...note, bodyMarkdown }))}
                 onTagsChange={(tagsInput) => updateSelectedNote((note) => ({ ...note, tagsInput }))}
                 onSave={() => void saveNote()}
+                initialSelection={markdownSelection}
+                initialScrollTop={markdownScrollTop}
+                onEditorStateChange={rememberMarkdownState}
               />
             </div>
           </section>

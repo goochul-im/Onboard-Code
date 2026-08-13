@@ -71,3 +71,48 @@ export interface SourceFile {
   startLine: number;
   endLine: number;
 }
+
+export interface WorkspaceSnapshotRequest {
+  schemaVersion: number;
+  appVersion: string;
+  databaseFormatVersion: number;
+  repositoryId: string;
+  stateJson: string;
+}
+
+export interface WorkspaceSnapshot extends WorkspaceSnapshotRequest {
+  snapshotId: number;
+  status: "pending" | "current" | "previous_valid";
+  createdAt: string;
+}
+
+export interface SelectedSymbolReference {
+  fqn: string;
+  signature: string;
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+}
+
+export interface RestorationRequest {
+  repositoryId: string;
+  rootPath: string;
+  branch: string;
+  head: string;
+  selectedSymbol: SelectedSymbolReference | null;
+}
+
+export type ReferenceValidationStatus = "valid" | "reconfirmation_required";
+
+export interface RestorationValidation {
+  request: RestorationRequest;
+  repositoryStatus: ReferenceValidationStatus;
+  revisionStatus: ReferenceValidationStatus;
+  analysisStatus: ReferenceValidationStatus;
+  symbolStatus: ReferenceValidationStatus;
+  fileStatus: ReferenceValidationStatus;
+  lineSpanStatus: ReferenceValidationStatus;
+  currentBranch: string | null;
+  currentHead: string | null;
+  currentIsDirty: boolean | null;
+}

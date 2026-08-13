@@ -6,10 +6,18 @@ interface CallGraphProps {
   graph: GraphData | null;
   selectedSymbolId: string | null;
   onSelectSymbol: (symbolId: string) => void;
+  viewport: GraphViewport | null;
+  onViewportChange: (viewport: GraphViewport) => void;
 }
 
-export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraphProps) {
+export interface GraphViewport { zoom: number; panX: number; panY: number }
+
+export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, onViewportChange }: CallGraphProps) {
   const container = useRef<HTMLDivElement>(null);
+  const selectSymbol = useRef(onSelectSymbol);
+  const viewportChanged = useRef(onViewportChange);
+  selectSymbol.current = onSelectSymbol;
+  viewportChanged.current = onViewportChange;
 
   useEffect(() => {
     if (!container.current || !graph) {
@@ -115,7 +123,15 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
       });
 
       graphInstance.on("tap", "node", (event) => {
-        onSelectSymbol(event.target.id());
+        selectSymbol.current(event.target.id());
+      });
+      if (viewport) {
+        graphInstance.zoom(viewport.zoom);
+        graphInstance.pan({ x: viewport.panX, y: viewport.panY });
+      }
+      graphInstance.on("zoom pan", () => {
+        const pan = graphInstance?.pan() ?? { x: 0, y: 0 };
+        viewportChanged.current({ zoom: graphInstance?.zoom() ?? 1, panX: pan.x, panY: pan.y });
       });
     });
 
@@ -123,7 +139,7 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
       destroyed = true;
       graphInstance?.destroy();
     };
-  }, [graph, onSelectSymbol, selectedSymbolId]);
+  }, [graph, selectedSymbolId]);
 
   if (!graph) {
     return <div className="graph-empty">함수를 선택하면 호출 그래프가 여기에 표시됩니다.</div>;
