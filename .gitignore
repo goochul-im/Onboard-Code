@@ -6,3 +6,4 @@ apps/desktop/src-tauri/gen/
 .omx/drafts/
 .omx/logs/
 .omx/state/
+.ouroboros/

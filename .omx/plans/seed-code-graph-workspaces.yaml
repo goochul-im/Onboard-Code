@@ -1,0 +1,196 @@
+goal: Redesign the local code-graph notebook desktop app into a focused three-workspace
+  developer tool that preserves all existing capabilities and fully restores analysis
+  work across app restarts.
+task_type: code
+brownfield_context:
+  project_type: brownfield
+  context_references:
+  - path: /Users/goochul/Desktop/coding/onboardCode
+    role: primary
+    summary: Existing local Tauri code-graph notebook desktop application for direct
+      Java and Python code analysis, call graphs, syntax-highlighted source, and Markdown
+      analysis documents.
+  - path: apps/desktop/src/App.tsx
+    role: primary
+    summary: Current main workspace composition that places function search, call
+      graph, source detail, and Markdown analysis documents together.
+  existing_patterns:
+  - Maintain the existing selected-function context across search, graph, source,
+    and analysis-document surfaces
+  - Treat CallGraph and MarkdownEditor as independent work surfaces
+  - Preserve local Git repository analysis and developer-authored Markdown analysis
+    workflows
+  - Use auxiliary panels connected to the current selected function
+  existing_dependencies:
+  - Tauri
+constraints:
+- >-
+  Preserve the complete baseline capability inventory: local cloned Git repository
+  registration, Java and Python indexing, Class.Function symbol search,
+  syntax-highlighted source viewing, source line and range references, caller and
+  callee graph navigation, multiple developer-authored Markdown analysis documents
+  per function, tags, draft and save behavior, and orphaned-note handling
+- Do not broaden v1 beyond local cloned Git repositories, Java and Python analysis, manual developer-authored notes, and function or method caller-callee graphs
+- Support macOS and Windows desktop builds; validate macOS in the available environment and record Windows as Not-tested with the missing execution environment named until equivalent Windows evidence is produced
+- Organize work into Find, Understand, and Record workspaces without enforcing a sequence
+- Do not keep every tool continuously visible on one screen
+- Keep the selected function and writing context while users move between workspaces
+- Automatically save drafts and work context in the local database using versioned snapshots and atomic transactions
+- Persist the latest valid working context per repository; multi-session history browsing and long-term snapshot retention are outside this redesign
+- Save a new workspace snapshot as pending with a monotonically increasing snapshot ID, schema version, app version, database format version, repository ID, and creation time; validate it inside the same transaction before promoting it to current
+- Retain the immediately preceding valid snapshot until promotion commits; an interrupted save or failed validation must leave the prior current snapshot readable, and retrying the same recovery must be idempotent
+- On missing, corrupt, or incompatible persisted state, restore the preceding valid snapshot when available and show an explicit non-destructive recovery warning; otherwise start cleanly without modifying analysis documents
+- Do not require content checksums unless an existing inexpensive content hash is already available
+- >-
+  Treat every registered Git repository as read-only input: registration,
+  inspection, indexing, source viewing, restoration, and recovery must never
+  checkout, reset, stash, clean, write, or otherwise mutate its worktree
+- Preserve unrelated uncommitted user changes and require git status before and after every tested repository workflow to be byte-identical
+- Do not prescribe exact SQLite table names or SQL statements in this Seed; before persistence edits, create and review the versioned artifact apps/desktop/docs/workspace-state-mapping.md that maps every persisted field and snapshot lifecycle transition to its existing storage owner, identifier, nullability, validation rule, migration behavior, recovery behavior, and verifying test; persistence implementation cannot start until this artifact has no unmapped required field
+- After Git branch or commit changes, revalidate persisted references and restore
+  only valid state
+- Mark broken references as requiring reconfirmation instead of automatically reconnecting
+  to a similar function or source line
+- Do not restore app window position or overall window size
+acceptance_criteria:
+- description: Selecting the same function fixture in Find, switching to Understand, and then switching to Record preserves the repository, selected function, active analysis document, unsaved title, body, and tags; returning to each workspace restores its prior task context.
+  semantic_ac_key: ac_5aae9b324d99dcc4
+- description: On first paint, Find shows one primary search-and-results surface, Understand shows one primary caller-and-callee graph surface, and Record shows one primary source-and-Markdown split surface; all non-primary tools are closed by default or visually subordinate, open only on explicit action, and closing them returns focus to the primary surface without changing the selected function.
+  semantic_ac_key: ac_b979f093cc79a972
+- description: Each workspace removes always-visible dashboard cards, uppercase micro-labels, decorative badges, and redundant borders that do not communicate hierarchy or state, while every baseline capability remains reachable through the capability regression scenarios.
+  semantic_ac_key: ac_5e6678230a8cda80
+- description: After the representative Find to Understand to Record scenario edits an unsaved analysis draft and restarts the app, the app restores the last valid active workspace, repository, search query and filters, selected function, graph center, depth, expanded nodes, zoom and pan, source location, scroll and selected line range, selected document, unsaved title, body and tags, Markdown cursor and scroll, and auxiliary-panel open and size state.
+  semantic_ac_key: ac_ac159230887a6459
+- description: Restoration first loads the registered repository by repository ID and canonical root path, then read-only inspects current branch, HEAD, and dirty state, then selects only a committed analysis run for the matching repository and revision identity, and finally validates selected symbol FQN and signature, file path, and line span; every mismatch uses the single status reconfirmation_required, remains visible with its stored context, and is never fuzzy-remapped.
+  semantic_ac_key: ac_92c78a785288e6c7
+- description: A workspace save inserts a pending snapshot with a monotonically increasing ID and version metadata, validates all required fields and references, atomically promotes it to current, and retains the preceding valid snapshot until commit; interruption before commit leaves the preceding snapshot current, and repeated recovery produces the same state without duplicate promotion.
+  semantic_ac_key: ac_1e2cbd7a9e51a4c0
+- description: A capability regression matrix covers repository registration, Java and Python indexing, Class.Function search, source syntax highlighting, line and range references, caller and callee graph navigation, multiple Markdown documents, tags, draft and save behavior, orphan handling, workspace switching, restart restoration, reconfirmation-required reference display, and persistence recovery; each row records a stable scenario ID, fixture repository and symbol, starting state, steps, expected visible and persisted results, actual result, pass or fail, platform and OS build, app build, timestamp, and evidence artifact paths.
+  semantic_ac_key: ac_2b7fa611ca9ab117
+- description: >-
+    The full representative workflow and capability matrix pass on macOS. Windows
+    remains supported but explicitly reports "Not-tested: Windows 11 x64 Tauri
+    test host unavailable" until a clean Windows 11 x64 host records the OS build
+    and app build and passes build, installation, launch, repository open, Java
+    and Python analysis, search, graph navigation, note edit, app restart, state
+    restore, reconfirmation-required reference, and recovery scenarios without
+    crash, hang, or data loss.
+  semantic_ac_key: ac_b053826d91a7f042
+- description: Registration, analysis, source reading, restart restoration, and reconfirmation-required recovery on a dirty fixture repository leave git status byte-identical, preserve unrelated uncommitted edits, and never execute checkout, reset, stash, clean, or repository writes.
+  semantic_ac_key: ac_4190a9f2d17a7ee1
+- description: Implementation creates the canonical checked-in scenario manifest at apps/desktop/src-tauri/tests/fixtures/manifest.yaml and evidence beneath artifacts/verification; the manifest enumerates stable scenario IDs FIND-JAVA-001, FIND-PY-001, UNDERSTAND-GRAPH-001, RECORD-LINE-001, RECORD-MULTIDOC-001, RESTORE-VALID-001, RESTORE-HEAD-CHANGED-001, RESTORE-DIRTY-001, RESTORE-SYMBOL-MISSING-001, RECOVERY-PENDING-001, RECOVERY-VALIDATED-001, RECOVERY-PROMOTION-001, RECOVERY-MIGRATION-001, and OPERATION-FAILURE-001, and maps each to a fixed fixture ID, repository revision, named symbol, setup, fault checkpoint, expected persisted assertions, expected visible assertions, and evidence filenames.
+  semantic_ac_key: ac_98dd483ef17e4ca7
+- description: For each repository, the persistence layer enforces at most one current workspace snapshot and retains one previous-valid snapshot until promotion commits; deterministic fault injection before pending insertion, after pending insertion, after validation, during promotion, and before commit never exposes a partial snapshot, never duplicates promotion, and preserves the same final state on repeated recovery.
+  semantic_ac_key: ac_6a71cd40fa017c0d
+- description: Analysis, reindex, and restore-validation failure or user cancellation never promotes partial state, preserves the last valid context and all saved or draft notes, presents a visible failure with retry or clean-start recovery, and does not leave the application waiting indefinitely; retry creates a distinct run and may become authoritative only after successful validation and commit.
+  semantic_ac_key: ac_711f33ca0fe2a710
+ontology_schema:
+  name: PersistedAnalysisWorkspaceState
+  description: The user-visible analysis context that connects repositories, selected
+    code symbols, workspace-specific views, Markdown drafts, and auxiliary panels
+    across application sessions.
+  fields:
+  - name: snapshotIdentity
+    type: object
+    description: Required snapshotId integer, schemaVersion integer, appVersion string, databaseFormatVersion integer, repositoryId integer, createdAt timestamp, and lifecycle status pending, current, or previous-valid; unknown enum values or missing required fields invalidate the snapshot.
+    required: true
+  - name: activeWorkspace
+    type: string
+    description: Required enum containing Find, Understand, or Record; any other value invalidates this field and triggers snapshot recovery.
+    required: true
+  - name: repositoryReference
+    type: object
+    description: Required repositoryId integer and canonical local path string plus optional branch name and HEAD commit string; repositoryId and path must resolve to the registered repository, while branch or HEAD mismatch marks dependent code references reconfirmation_required.
+    required: true
+  - name: searchContext
+    type: object
+    description: Search query string, serializable filter map, and optional selectedSymbolId integer with FQN and file path validation metadata; absent selection is valid, but an unresolved selection is restored visibly as reconfirmation_required.
+    required: true
+  - name: graphContext
+    type: object
+    description: Optional centerSymbolId, depth integer constrained to the UI-supported range, expanded symbol ID list, finite positive zoom number, and finite pan x and y numbers; invalid view coordinates fall back to defaults without invalidating otherwise valid symbol context.
+    required: true
+  - name: sourceContext
+    type: object
+    description: Optional file path, one-based start and end line integers with start not greater than end, non-negative finite scroll offset, and selected line range; file and line mismatches mark the source reference reconfirmation_required while preserving the stored file path and line span as unresolved context.
+    required: true
+  - name: documentContext
+    type: object
+    description: Optional selected document ID plus draft title, Markdown body, and tag strings; strings use the existing application and SQLite limits, saved document IDs must belong to the repository, and invalid document identity must not discard the draft.
+    required: true
+  - name: markdownEditorContext
+    type: object
+    description: Zero-based cursor start and end offsets bounded by the draft body length and a non-negative finite scroll offset; out-of-range cursor values clamp safely while the draft remains unchanged.
+    required: true
+  - name: auxiliaryPanels
+    type: array
+    description: Known panel identifiers with open booleans and finite positive sizes constrained by the viewport; unknown panels are ignored, invalid sizes use defaults, and valid open state remains restorable.
+    required: true
+  - name: referenceValidationStatus
+    type: object
+    description: Independent validation results for repository identity, branch or HEAD analysis identity, dirty state, file path, FQN and signature, source line span, document, and graph references; each result uses only valid or reconfirmation_required and never fuzzy-remaps.
+    required: true
+  - name: persistenceVersion
+    type: integer
+    description: Positive schema version of the atomically persisted snapshot; older compatible versions migrate transactionally exactly once and record migratedFromVersion, while newer or incompatible versions are not mutated and trigger last-valid or clean-state recovery.
+    required: true
+  - name: recoveryStatus
+    type: object
+    description: Whether the latest snapshot, a last-valid snapshot, or clean workspace state was restored and which visible warning must be shown.
+    required: true
+evaluation_principles:
+- name: Workflow continuity
+  description: A developer can move among finding, understanding, and recording analysis
+    without losing the selected function or writing context.
+  weight: 0.35
+- name: Restart continuity
+  description: Valid persisted work returns after restart with enough detail to continue
+    analysis immediately.
+  weight: 0.3
+- name: Focused visual hierarchy
+  description: The selected workspace foregrounds its primary task and avoids an always-visible
+    AI-dashboard appearance.
+  weight: 0.2
+- name: Reference integrity
+  description: Changed Git references are validated conservatively and never guessed
+    or silently remapped.
+  weight: 0.15
+exit_conditions:
+- name: Focused workspace flow is complete
+  description: The three workspaces provide the specified primary surfaces and on-demand
+    auxiliary tools while retaining work context during navigation.
+  criteria: Find, Understand, and Record behavior is observable and existing functionality
+    remains available.
+- name: Persistent analysis continuity is complete
+  description: Valid session state and drafts are restored after restart, while invalid
+    Git references require reconfirmation.
+  criteria: The representative find-understand-record-restart scenario restores every
+    specified valid state without arbitrary reconnection.
+- name: Visual redesign is complete
+  description: The app presents a dense, focused developer-tool visual system rather
+    than a fragmented AI dashboard.
+  criteria: Primary work surfaces dominate each workspace and unnecessary cards, labels,
+    borders, and decorative badges are reduced.
+verification:
+- Verify apps/desktop/docs/workspace-state-mapping.md exists before persistence edits, has no unmapped required field or lifecycle transition, and links each mapping to a verifying test.
+- Verify the canonical manifest apps/desktop/src-tauri/tests/fixtures/manifest.yaml contains every required stable scenario ID, fixed fixture ID, repository revision, named symbol, fault setup, persisted and visible assertions, and evidence filename.
+- Use stable checked-in Java and Python fixture repositories and named function symbols so every capability-matrix scenario is repeatable.
+- Record each matrix row with scenario ID, fixture repository and symbol, starting state, steps, expected visible and persisted results, actual result, pass or fail, platform and OS build, app build, timestamp, and evidence artifact paths; acceptable evidence is a targeted screenshot, test log, or database assertion appropriate to the claim.
+- On macOS, run the full capability matrix and an end-to-end Find to Understand to Record to restart scenario; verify both visible UI state and persisted local state.
+- Verify first-paint hierarchy in each workspace: exactly one primary work surface is visible, non-primary tools are closed or subordinate, opening and closing an auxiliary tool does not change the selected function, and keyboard focus returns to the primary surface.
+- Test valid restore, changed HEAD, changed branch, deleted or renamed symbol, partially reconfirmation-required references, dirty worktree, interrupted writes at every defined promotion checkpoint, incompatible older and newer schema versions, idempotent migration, last-valid rollback, clean non-destructive fallback, cancelled analysis, and failed retry.
+- Repeat each persistence, migration, and fault-injection scenario at least twice using deterministic fixture state and controlled ordering; assert the same authoritative snapshot, note count, reference statuses, final database state, and visible result without relying on wall-clock timing.
+- For the dirty-worktree scenario, capture git status before registration and after analysis, source viewing, restart restore, and reconfirmation-required recovery; require byte-identical output and preservation of unrelated uncommitted edits.
+- Record "Not-tested: Windows 11 x64 Tauri test host unavailable" until a clean Windows 11 x64 environment records OS and app builds and passes build, installation, launch, repository open, Java and Python analysis, search, graph navigation, note edit, restart restore, reconfirmation-required reference, and recovery scenarios without crash, hang, or data loss.
+- Do not claim full cross-platform verification until the Windows evidence artifacts are attached.
+metadata:
+  seed_id: seed_d7d148b0faa3
+  version: 1.3.1
+  created_at: '2026-08-11T13:30:20.926319Z'
+  ambiguity_score: 0.1045
+  interview_id: interview_20260811_130450
+  parent_seed_id: null
+  generation_mode: normal
+  degraded: false
+  unresolved_slots: []
+  recovery_reason: null
