@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs, path::Path};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     analysis::{EdgeConfidence, IndexedEdge, IndexedSymbol},
@@ -86,6 +86,32 @@ pub struct SourceFile {
     pub end_line: u32,
 }
 
+pub const WORKSPACE_SNAPSHOT_SCHEMA_VERSION: i64 = 1;
+pub const WORKSPACE_DATABASE_FORMAT_VERSION: i64 = 1;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSnapshotRequest {
+    pub schema_version: i64,
+    pub app_version: String,
+    pub database_format_version: i64,
+    pub repository_id: String,
+    pub state_json: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSnapshot {
+    pub snapshot_id: i64,
+    pub schema_version: i64,
+    pub app_version: String,
+    pub database_format_version: i64,
+    pub repository_id: String,
+    pub state_json: String,
+    pub status: String,
+    pub created_at: String,
+}
+
 impl Database {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
@@ -168,6 +194,22 @@ impl Database {
               filters_json TEXT NOT NULL DEFAULT '{}',
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+              snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              schema_version INTEGER NOT NULL,
+              app_version TEXT NOT NULL,
+              database_format_version INTEGER NOT NULL,
+              repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+              state_json TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('pending', 'current', 'previous_valid')),
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS workspace_snapshot_one_current
+              ON workspace_snapshots(repository_id) WHERE status = 'current';
+            CREATE UNIQUE INDEX IF NOT EXISTS workspace_snapshot_one_previous_valid
+              ON workspace_snapshots(repository_id) WHERE status = 'previous_valid';
 
             CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
               repository_id UNINDEXED,
@@ -618,6 +660,121 @@ impl Database {
             .optional()
     }
 
+    pub fn save_workspace_snapshot(
+        &mut self,
+        request: &WorkspaceSnapshotRequest,
+    ) -> rusqlite::Result<WorkspaceSnapshot> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO workspace_snapshots (
+              schema_version, app_version, database_format_version, repository_id, state_json, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending')
+            "#,
+            params![
+                request.schema_version,
+                request.app_version,
+                request.database_format_version,
+                request.repository_id,
+                request.state_json,
+            ],
+        )?;
+        let snapshot_id = transaction.last_insert_rowid();
+
+        validate_workspace_snapshot(&transaction, request)?;
+
+        transaction.execute(
+            "DELETE FROM workspace_snapshots WHERE repository_id = ?1 AND status = 'previous_valid'",
+            [&request.repository_id],
+        )?;
+        transaction.execute(
+            "UPDATE workspace_snapshots SET status = 'previous_valid' WHERE repository_id = ?1 AND status = 'current'",
+            [&request.repository_id],
+        )?;
+        transaction.execute(
+            "UPDATE workspace_snapshots SET status = 'current' WHERE snapshot_id = ?1 AND status = 'pending'",
+            [snapshot_id],
+        )?;
+        let snapshot = workspace_snapshot_by_id(&transaction, snapshot_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        transaction.commit()?;
+        Ok(snapshot)
+    }
+
+    pub fn current_workspace_snapshot(
+        &self,
+        repository_id: &str,
+    ) -> rusqlite::Result<Option<WorkspaceSnapshot>> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT snapshot_id, schema_version, app_version, database_format_version,
+                       repository_id, state_json, status, created_at
+                FROM workspace_snapshots
+                WHERE repository_id = ?1 AND status = 'current'
+                "#,
+                [repository_id],
+                row_to_workspace_snapshot,
+            )
+            .optional()
+    }
+
+    pub fn has_committed_analysis_for_revision(
+        &self,
+        repository_id: &str,
+        revision: &str,
+    ) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            r#"
+            SELECT COALESCE((
+              SELECT revision = ?2
+              FROM analysis_runs
+              WHERE repository_id = ?1
+                AND status IN ('completed', 'partial')
+                AND completed_at IS NOT NULL
+              ORDER BY id DESC
+              LIMIT 1
+            ), 0)
+            "#,
+            params![repository_id, revision],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn symbol_matches_reference(
+        &self,
+        repository_id: &str,
+        fqn: &str,
+        signature: &str,
+        relative_path: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1
+              FROM symbols
+              WHERE repository_id = ?1
+                AND fqn = ?2
+                AND signature = ?3
+                AND relative_path = ?4
+                AND start_line = ?5
+                AND end_line = ?6
+            )
+            "#,
+            params![
+                repository_id,
+                fqn,
+                signature,
+                relative_path,
+                start_line,
+                end_line,
+            ],
+            |row| row.get(0),
+        )
+    }
+
     fn repository_by_path(&self, root_path: &str) -> rusqlite::Result<Option<RepositoryRecord>> {
         self.connection
             .query_row(
@@ -700,6 +857,50 @@ impl Database {
             .collect::<rusqlite::Result<Vec<_>>>();
         results
     }
+}
+
+fn validate_workspace_snapshot(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &WorkspaceSnapshotRequest,
+) -> rusqlite::Result<()> {
+    let supported_versions = request.schema_version == WORKSPACE_SNAPSHOT_SCHEMA_VERSION
+        && request.database_format_version == WORKSPACE_DATABASE_FORMAT_VERSION;
+    let valid_json_object = serde_json::from_str::<serde_json::Value>(&request.state_json)
+        .ok()
+        .is_some_and(|value| value.is_object());
+    let repository_exists = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM repositories WHERE id = ?1)",
+        [&request.repository_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if supported_versions
+        && !request.app_version.trim().is_empty()
+        && !request.repository_id.trim().is_empty()
+        && valid_json_object
+        && repository_exists
+    {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::InvalidQuery)
+    }
+}
+
+fn workspace_snapshot_by_id(
+    transaction: &rusqlite::Transaction<'_>,
+    snapshot_id: i64,
+) -> rusqlite::Result<Option<WorkspaceSnapshot>> {
+    transaction
+        .query_row(
+            r#"
+            SELECT snapshot_id, schema_version, app_version, database_format_version,
+                   repository_id, state_json, status, created_at
+            FROM workspace_snapshots
+            WHERE snapshot_id = ?1
+            "#,
+            [snapshot_id],
+            row_to_workspace_snapshot,
+        )
+        .optional()
 }
 
 fn insert_symbol(
@@ -818,6 +1019,19 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
     })
 }
 
+fn row_to_workspace_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceSnapshot> {
+    Ok(WorkspaceSnapshot {
+        snapshot_id: row.get(0)?,
+        schema_version: row.get(1)?,
+        app_version: row.get(2)?,
+        database_format_version: row.get(3)?,
+        repository_id: row.get(4)?,
+        state_json: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
 fn ensure_notes_schema(connection: &mut Connection) -> rusqlite::Result<()> {
     let mut statement = connection.prepare("PRAGMA table_info(notes)")?;
     let columns = statement
@@ -932,6 +1146,167 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    fn registered_database(test_name: &str) -> (std::path::PathBuf, Database) {
+        let path = temporary_database_path(test_name);
+        let database = Database::open(&path).expect("database opens");
+        database
+            .upsert_repository(
+                "repo_workspace",
+                &RepositorySnapshot {
+                    root_path: format!("/tmp/{test_name}"),
+                    display_name: test_name.into(),
+                    branch: "main".into(),
+                    head: "abc123".into(),
+                    is_dirty: false,
+                },
+            )
+            .expect("repository inserts");
+        (path, database)
+    }
+
+    fn workspace_request(state_json: &str) -> WorkspaceSnapshotRequest {
+        WorkspaceSnapshotRequest {
+            schema_version: WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+            app_version: "0.1.0".into(),
+            database_format_version: WORKSPACE_DATABASE_FORMAT_VERSION,
+            repository_id: "repo_workspace".into(),
+            state_json: state_json.into(),
+        }
+    }
+
+    #[test]
+    fn workspace_snapshot_save_is_atomic_and_keeps_the_preceding_valid_snapshot() {
+        let (path, mut database) = registered_database("workspace-snapshot-atomic");
+        let first = database
+            .save_workspace_snapshot(&workspace_request(r#"{"activeWorkspace":"find"}"#))
+            .expect("first snapshot saves");
+        let second = database
+            .save_workspace_snapshot(&workspace_request(r#"{"activeWorkspace":"record"}"#))
+            .expect("second snapshot saves");
+
+        assert!(second.snapshot_id > first.snapshot_id);
+        assert_eq!(second.status, "current");
+        assert!(!second.created_at.is_empty());
+        let states = database
+            .connection
+            .prepare(
+                "SELECT snapshot_id, status FROM workspace_snapshots WHERE repository_id = 'repo_workspace' ORDER BY snapshot_id",
+            )
+            .expect("snapshot query prepares")
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .expect("snapshots query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("snapshot rows load");
+        assert_eq!(
+            states,
+            vec![
+                (first.snapshot_id, "previous_valid".into()),
+                (second.snapshot_id, "current".into())
+            ]
+        );
+
+        drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn workspace_snapshot_failed_save_leaves_current_readable_and_retry_is_idempotent() {
+        let (path, mut database) = registered_database("workspace-snapshot-interruption");
+        let saved = database
+            .save_workspace_snapshot(&workspace_request(r#"{"activeWorkspace":"understand"}"#))
+            .expect("valid snapshot saves");
+        {
+            let transaction = database
+                .connection
+                .transaction()
+                .expect("interrupted transaction starts");
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO workspace_snapshots (
+                      schema_version, app_version, database_format_version, repository_id, state_json, status
+                    ) VALUES (1, '0.1.0', 1, 'repo_workspace', '{"activeWorkspace":"record"}', 'pending')
+                    "#,
+                    [],
+                )
+                .expect("pending snapshot inserts before interruption");
+            let pending_snapshot_id = transaction.last_insert_rowid();
+            transaction
+                .execute(
+                    "UPDATE workspace_snapshots SET status = 'previous_valid' WHERE repository_id = ?1 AND status = 'current'",
+                    ["repo_workspace"],
+                )
+                .expect("current snapshot demotes before interruption");
+            transaction
+                .execute(
+                    "UPDATE workspace_snapshots SET status = 'current' WHERE snapshot_id = ?1 AND status = 'pending'",
+                    [pending_snapshot_id],
+                )
+                .expect("pending snapshot promotes before interruption");
+            // Dropping the uncommitted transaction models interruption after promotion but before commit.
+        }
+        assert_eq!(
+            database
+                .current_workspace_snapshot("repo_workspace")
+                .expect("current snapshot reads after interruption")
+                .expect("current snapshot remains after interruption"),
+            saved
+        );
+        let invalid = WorkspaceSnapshotRequest {
+            app_version: " ".into(),
+            ..workspace_request(r#"{"activeWorkspace":"record"}"#)
+        };
+
+        assert!(database.save_workspace_snapshot(&invalid).is_err());
+        assert_eq!(
+            database
+                .current_workspace_snapshot("repo_workspace")
+                .expect("current snapshot reads")
+                .expect("current snapshot exists"),
+            saved
+        );
+        assert!(database.save_workspace_snapshot(&invalid).is_err());
+        let snapshot_count: i64 = database
+            .connection
+            .query_row("SELECT COUNT(*) FROM workspace_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("snapshot count reads");
+        assert_eq!(
+            snapshot_count, 1,
+            "failed retries must roll back pending rows"
+        );
+
+        drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn workspace_snapshot_rejects_unknown_repository_without_changing_current() {
+        let (path, mut database) = registered_database("workspace-snapshot-reference");
+        let saved = database
+            .save_workspace_snapshot(&workspace_request(r#"{"activeWorkspace":"find"}"#))
+            .expect("valid snapshot saves");
+        let unknown_repository = WorkspaceSnapshotRequest {
+            repository_id: "missing_repository".into(),
+            ..workspace_request(r#"{"activeWorkspace":"record"}"#)
+        };
+
+        assert!(database
+            .save_workspace_snapshot(&unknown_repository)
+            .is_err());
+        assert_eq!(
+            database
+                .current_workspace_snapshot("repo_workspace")
+                .expect("current snapshot reads")
+                .expect("current snapshot remains"),
+            saved
+        );
+
+        drop(database);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

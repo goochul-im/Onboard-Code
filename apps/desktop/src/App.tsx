@@ -4,6 +4,8 @@ import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
+import { selectWorkspace } from "./workspaceContext";
+import { defaultWorkspace, workspaces, type Workspace } from "./workspaces";
 import type {
   AnalysisSummary,
   GraphData,
@@ -37,8 +39,9 @@ function App() {
   const [depth, setDepth] = useState(1);
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
-  const [activeView, setActiveView] = useState<"graph" | "detail">("graph");
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(defaultWorkspace);
   const [lineReferenceRange, setLineReferenceRange] = useState<LineRange | null>(null);
+  const [pendingLineReference, setPendingLineReference] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
   const selectedCodeLine = useRef<HTMLElement | null>(null);
@@ -196,10 +199,17 @@ function App() {
   }, [depth]); // depth changes intentionally reload the selected graph
 
   useEffect(() => {
-    if (activeView === "detail" && sourceFile) {
+    if (activeWorkspace === "record" && sourceFile) {
       selectedCodeLine.current?.scrollIntoView({ block: "center" });
     }
-  }, [activeView, sourceFile]);
+  }, [activeWorkspace, sourceFile]);
+
+  useEffect(() => {
+    if (activeWorkspace === "record" && pendingLineReference && selectedNote && markdownEditor.current) {
+      markdownEditor.current.insertAtCursor(pendingLineReference);
+      setPendingLineReference(null);
+    }
+  }, [activeWorkspace, pendingLineReference, selectedNote]);
 
   const chooseRepository = async () => {
     const path = await open({
@@ -225,7 +235,6 @@ function App() {
       setNotes([]);
       setSelectedNoteId(null);
       setAnalysis(null);
-      setActiveView("graph");
       setNotice(`${nextRepository.displayName}을(를) 등록했습니다. 분석을 실행하세요.`);
     } catch (error) {
       setNotice(`저장소를 등록하지 못했습니다: ${String(error)}`);
@@ -279,7 +288,6 @@ function App() {
       setSourceFile(null);
       setNotes([]);
       setSelectedNoteId(null);
-      setActiveView("graph");
     } catch (error) {
       setNotice(`저장소를 바꾸기 전에 분석 문서를 저장하지 못했습니다: ${String(error)}`);
     } finally {
@@ -403,8 +411,9 @@ function App() {
       setNotice("현재 작업이 끝난 뒤 줄 참조를 추가하세요.");
       return;
     }
-    markdownEditor.current?.insertAtCursor(lineReference);
-    setNotice(`${lineReference} 참조를 노트 커서 위치에 추가했습니다.`);
+    setPendingLineReference(lineReference);
+    setActiveWorkspace((current) => selectWorkspace(current, "record"));
+    setNotice(`${lineReference} 참조를 분석 문서에 추가할 준비를 마쳤습니다.`);
   };
 
   const cancelSourceLineSelection = () => {
@@ -416,23 +425,36 @@ function App() {
     <main className="workspace-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">LOCAL-FIRST CODE NOTEBOOK</p>
           <h1>코드 그래프 노트</h1>
         </div>
         <div className="topbar-actions">
-          <span className="local-pill">외부 전송 없음</span>
           <button className="secondary-button" onClick={() => void chooseRepository()} disabled={busy}>
             저장소 열기
           </button>
         </div>
       </header>
 
+      <nav className="workspace-nav" aria-label="분석 작업공간">
+        {workspaces.map(({ id: workspace, label, description }) => (
+          <button
+            aria-current={activeWorkspace === workspace ? "page" : undefined}
+            className={activeWorkspace === workspace ? "active" : ""}
+            key={workspace}
+            onClick={() => setActiveWorkspace((current) => selectWorkspace(current, workspace))}
+            title={description}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
       <section className="notice" role="status">
         {notice}
       </section>
 
-      <div className="workspace-grid">
-        <aside className="sidebar">
+      <div className={`workspace-grid workspace-${activeWorkspace}`}>
+        {activeWorkspace === "find" && <section className="sidebar find-workspace" aria-label="함수 찾기">
           <label className="field-label" htmlFor="repository-select">저장소</label>
           <select
             id="repository-select"
@@ -496,13 +518,12 @@ function App() {
               </ul>
             </details>
           )}
-        </aside>
+        </section>}
 
-        {activeView === "graph" ? (
+        {activeWorkspace === "understand" && (
           <section className="graph-panel" aria-label="호출 관계">
             <div className="panel-heading">
               <div className="panel-title">
-                <p className="eyebrow">CALL GRAPH</p>
                 <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
               </div>
               <div className="graph-actions">
@@ -516,7 +537,7 @@ function App() {
                 </label>
                 <button
                   className="secondary-button small"
-                  onClick={() => setActiveView("detail")}
+                  onClick={() => setActiveWorkspace((current) => selectWorkspace(current, "record"))}
                   disabled={!selectedSymbol || !sourceFile}
                 >
                   소스·노트 열기
@@ -538,20 +559,20 @@ function App() {
               </div>
             )}
           </section>
-        ) : (
-          <section className="detail-view" aria-label="함수 상세">
-            <header className="detail-view-header">
-              <button className="secondary-button small" onClick={() => setActiveView("graph")}>← 그래프로 돌아가기</button>
-              <div className="detail-title">
-                <p className="eyebrow">FUNCTION DETAIL</p>
-                <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수 상세"}</h2>
+        )}
+
+        {activeWorkspace === "record" && (
+          <section className="record-workspace" aria-label="분석 기록">
+            <header className="record-workspace-header">
+              <div>
+                <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
               </div>
+              {!selectedSymbol && <p className="muted">Find에서 함수를 선택하면 새 분석 문서를 만들 수 있습니다.</p>}
             </header>
-            <div className="detail-workspace">
-              <section className="source-workspace">
+            <div className="detail-workspace record-detail-workspace">
+              <section className="source-workspace" aria-label="선택한 함수 소스">
                 <div className="source-heading">
                   <div>
-                    <p className="eyebrow">SOURCE</p>
                     <h3>{sourceFile?.relativePath ?? "소스 미리보기"}</h3>
                   </div>
                   {sourceFile && <span>{sourceFile.startLine}–{sourceFile.endLine}행</span>}
@@ -589,7 +610,7 @@ function App() {
                       );
                     })}
                   </pre>
-                ) : <p className="muted">그래프에서 함수를 선택한 뒤 상세 화면을 여세요.</p>}
+                ) : <p className="muted">Find에서 함수를 선택하면 여기에 소스가 표시됩니다.</p>}
               </section>
               <MarkdownEditor
                 key={selectedNote?.id ?? `no-note-${selectedSymbol?.id ?? "no-symbol"}`}

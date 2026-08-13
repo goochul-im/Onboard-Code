@@ -2,13 +2,16 @@ mod analysis;
 mod database;
 mod indexer;
 mod repository;
+mod restoration;
 
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::Mutex};
 
 use analysis::IndexedSymbol;
 use database::{
     AnalysisSummary, Database, GraphData, NoteRecord, OrphanNote, RepositoryRecord, SourceFile,
+    WorkspaceSnapshot, WorkspaceSnapshotRequest,
 };
+use restoration::{RestorationRequest, RestorationValidation};
 use tauri::{Manager, State};
 
 pub struct AppState {
@@ -79,6 +82,44 @@ fn analyze_repository(
     database
         .replace_analysis(&repository_id, &snapshot.head, &analysis)
         .map_err(|error| format!("분석 결과를 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn validate_restoration_references(
+    request: RestorationRequest,
+    state: State<'_, AppState>,
+) -> Result<RestorationValidation, String> {
+    let database = state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?;
+    restoration::validate(&database, request)
+}
+
+#[tauri::command]
+fn save_workspace_snapshot(
+    request: WorkspaceSnapshotRequest,
+    state: State<'_, AppState>,
+) -> Result<WorkspaceSnapshot, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .save_workspace_snapshot(&request)
+        .map_err(|error| format!("작업공간 상태를 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn current_workspace_snapshot(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<WorkspaceSnapshot>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .current_workspace_snapshot(&repository_id)
+        .map_err(|error| format!("작업공간 상태를 읽을 수 없습니다: {error}"))
 }
 
 #[tauri::command]
@@ -271,20 +312,10 @@ fn read_source(
             .ok_or_else(|| "분석 결과에서 함수를 찾을 수 없습니다.".to_owned())?;
         (repository, source_location)
     };
-    let root = PathBuf::from(&repository.root_path)
-        .canonicalize()
-        .map_err(|error| format!("저장소 경로를 확인할 수 없습니다: {error}"))?;
-    let source_path = root
-        .join(&source_location.0)
-        .canonicalize()
-        .map_err(|error| {
-            format!("소스 파일이 이동했거나 읽을 수 없습니다. 다시 분석하세요: {error}")
-        })?;
-    if !source_path.starts_with(&root) {
-        return Err("저장소 밖의 파일은 읽을 수 없습니다.".to_owned());
-    }
-    let source = fs::read_to_string(source_path)
-        .map_err(|error| format!("소스 파일을 읽을 수 없습니다: {error}"))?;
+    let source = repository::read_source(
+        PathBuf::from(&repository.root_path).as_path(),
+        &source_location.0,
+    )?;
 
     Ok(SourceFile {
         relative_path: source_location.0,
@@ -312,6 +343,9 @@ pub fn run() {
             list_repositories,
             register_repository,
             analyze_repository,
+            validate_restoration_references,
+            save_workspace_snapshot,
+            current_workspace_snapshot,
             search_symbols,
             get_graph,
             list_notes,

@@ -86,6 +86,23 @@ pub fn source_files(repository_root: &Path) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
+/// Reads a source file only when its canonical path remains inside the registered repository.
+/// This deliberately has no Git write path: registered repositories are always input-only.
+pub fn read_source(repository_root: &Path, relative_path: &str) -> Result<String, String> {
+    let root = repository_root
+        .canonicalize()
+        .map_err(|error| format!("저장소 경로를 확인할 수 없습니다: {error}"))?;
+    let source_path = root.join(relative_path).canonicalize().map_err(|error| {
+        format!("소스 파일이 이동했거나 읽을 수 없습니다. 다시 분석하세요: {error}")
+    })?;
+    if !source_path.starts_with(&root) {
+        return Err("저장소 밖의 파일은 읽을 수 없습니다.".to_owned());
+    }
+
+    std::fs::read_to_string(source_path)
+        .map_err(|error| format!("소스 파일을 읽을 수 없습니다: {error}"))
+}
+
 fn git_output<const N: usize>(repository_path: &Path, args: [&str; N]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -115,7 +132,18 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{inspect, stable_repository_id};
+    use crate::{
+        database::{
+            Database, WorkspaceSnapshotRequest, WORKSPACE_DATABASE_FORMAT_VERSION,
+            WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+        },
+        indexer,
+        restoration::{
+            self, ReferenceValidationStatus, RestorationRequest, SelectedSymbolReference,
+        },
+    };
+
+    use super::{inspect, read_source, stable_repository_id};
 
     fn temporary_directory(test_name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -202,5 +230,123 @@ mod tests {
 
         assert!(error.contains("Git 저장소"));
         fs::remove_dir_all(directory).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn dirty_repository_workflow_preserves_status_across_restart_and_requires_reconfirmation() {
+        let directory = temporary_directory("dirty-workflow-read-only");
+        fs::create_dir_all(&directory).expect("temporary repository");
+        run_git(&directory, &["init", "--initial-branch", "main"]);
+        run_git(&directory, &["config", "user.name", "Test User"]);
+        run_git(&directory, &["config", "user.email", "test@example.com"]);
+        fs::write(directory.join("sample.py"), "def start():\n    return 1\n")
+            .expect("fixture source");
+        fs::write(directory.join("README.md"), "fixture documentation\n")
+            .expect("fixture documentation");
+        run_git(&directory, &["add", "sample.py", "README.md"]);
+        run_git(&directory, &["commit", "-m", "fixture"]);
+
+        let clean_snapshot = inspect(directory.to_str().expect("UTF-8 fixture"))
+            .expect("clean repository inspection");
+        let restoration_request = RestorationRequest {
+            repository_id: stable_repository_id(&clean_snapshot.root_path),
+            root_path: clean_snapshot.root_path.clone(),
+            branch: clean_snapshot.branch.clone(),
+            head: clean_snapshot.head.clone(),
+            selected_symbol: Some(SelectedSymbolReference {
+                fqn: "sample.start".into(),
+                signature: "()".into(),
+                relative_path: "sample.py".into(),
+                start_line: 1,
+                end_line: 2,
+            }),
+        };
+        fs::write(
+            directory.join("README.md"),
+            "fixture documentation\npreserve this unrelated edit\n",
+        )
+        .expect("unrelated tracked edit");
+        let status_before = Command::new("git")
+            .arg("-C")
+            .arg(&directory)
+            .args(["status", "--porcelain=v1", "--untracked-files=all"])
+            .output()
+            .expect("status before workflow");
+
+        let database_path = temporary_directory("dirty-workflow-database").join("state.sqlite3");
+        let dirty_snapshot = inspect(directory.to_str().expect("UTF-8 fixture"))
+            .expect("dirty repository registration");
+        assert!(dirty_snapshot.is_dirty);
+        let repository_id = stable_repository_id(&dirty_snapshot.root_path);
+        let mut database = Database::open(&database_path).expect("database opens");
+        database
+            .upsert_repository(&repository_id, &dirty_snapshot)
+            .expect("repository registration persists");
+        let analysis =
+            indexer::analyze_repository(&dirty_snapshot.root_path).expect("analysis succeeds");
+        let symbol = analysis
+            .symbols
+            .iter()
+            .find(|symbol| symbol.fqn == "sample.start")
+            .expect("fixture function")
+            .clone();
+        database
+            .replace_analysis(&repository_id, &dirty_snapshot.head, &analysis)
+            .expect("analysis persists");
+        let source_location = database
+            .source_for_symbol(&repository_id, &symbol.id)
+            .expect("source lookup")
+            .expect("source location");
+        assert_eq!(
+            read_source(
+                std::path::Path::new(&dirty_snapshot.root_path),
+                &source_location.0
+            )
+            .expect("source reads"),
+            "def start():\n    return 1\n"
+        );
+        database
+            .save_workspace_snapshot(&WorkspaceSnapshotRequest {
+                schema_version: WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+                app_version: "0.1.0".into(),
+                database_format_version: WORKSPACE_DATABASE_FORMAT_VERSION,
+                repository_id: repository_id.clone(),
+                state_json: "{\"activeWorkspace\":\"find\"}".into(),
+            })
+            .expect("workspace state saves");
+        drop(database);
+
+        let restarted_database = Database::open(&database_path).expect("database reopens");
+        assert!(restarted_database
+            .current_workspace_snapshot(&repository_id)
+            .expect("workspace state restores")
+            .is_some());
+        let restored = restoration::validate(&restarted_database, restoration_request)
+            .expect("restoration validates");
+        assert_eq!(restored.repository_status, ReferenceValidationStatus::Valid);
+        assert_eq!(
+            restored.revision_status,
+            ReferenceValidationStatus::ReconfirmationRequired
+        );
+        assert_eq!(
+            restored.symbol_status,
+            ReferenceValidationStatus::ReconfirmationRequired
+        );
+
+        let status_after = Command::new("git")
+            .arg("-C")
+            .arg(&directory)
+            .args(["status", "--porcelain=v1", "--untracked-files=all"])
+            .output()
+            .expect("status after workflow");
+        assert_eq!(status_before.stdout, status_after.stdout);
+        assert_eq!(
+            fs::read_to_string(directory.join("README.md")).expect("unrelated edit remains"),
+            "fixture documentation\npreserve this unrelated edit\n"
+        );
+
+        drop(restarted_database);
+        fs::remove_dir_all(directory).expect("fixture cleanup");
+        let _ = fs::remove_dir_all(database_path.parent().expect("database parent"));
     }
 }

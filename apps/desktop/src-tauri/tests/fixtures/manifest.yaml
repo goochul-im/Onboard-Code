@@ -1,0 +1,214 @@
+manifest_version: 1
+description: >-
+  Canonical, deterministic scenarios for the local code-graph notebook's
+  Find, Understand, Record, restoration, and snapshot-recovery workflows.
+fixtures:
+  java-call-graph-v1:
+    repository_revision: fixture-java-graph@v1
+    language: java
+  python-call-graph-v1:
+    repository_revision: fixture-python-graph@v1
+    language: python
+  mixed-workspace-v1:
+    repository_revision: fixture-mixed-workspace@v1
+    language: java-and-python
+  recovery-workspace-v1:
+    repository_revision: fixture-recovery-workspace@v1
+    language: java-and-python
+
+scenarios:
+  - id: FIND-JAVA-001
+    fixture_id: java-call-graph-v1
+    repository_revision: fixture-java-graph@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: register and index the Java fixture at its fixed revision
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - selected symbol stores its exact FQN, signature, relative path, and line range
+      - search query and active workspace are restorable
+    expected_visible_assertions:
+      - Find shows the Class.Function search result for OrderService.submit
+      - selecting the result opens the matching syntax-highlighted Java source range
+    evidence_filename: artifacts/verification/FIND-JAVA-001.md
+
+  - id: FIND-PY-001
+    fixture_id: python-call-graph-v1
+    repository_revision: fixture-python-graph@v1
+    named_symbol: sample.start()
+    setup: register and index the Python fixture at its fixed revision
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - selected symbol stores its exact FQN, signature, relative path, and line range
+      - search filters and active workspace are restorable
+    expected_visible_assertions:
+      - Find shows the Class.Function search result for sample.start
+      - selecting the result opens the matching syntax-highlighted Python source range
+    evidence_filename: artifacts/verification/FIND-PY-001.md
+
+  - id: UNDERSTAND-GRAPH-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: select the indexed Java symbol, open Understand, and expand caller and callee nodes
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - graph center, supported depth, expanded symbol IDs, zoom, and pan are saved
+      - selected function remains the same shared workspace context
+    expected_visible_assertions:
+      - Understand foregrounds the caller-callee graph for the selected function
+      - graph navigation preserves the selected source and writing context
+    evidence_filename: artifacts/verification/UNDERSTAND-GRAPH-001.md
+
+  - id: RECORD-LINE-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: select a source line range, open Record, and enter an unsaved Markdown draft
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - source file, one-based line range, and scroll offset are saved
+      - draft title, body, tags, and editor cursor context are saved without a document ID
+    expected_visible_assertions:
+      - Record restores the selected source range beside the Markdown writing surface
+      - the draft remains editable after workspace navigation
+    evidence_filename: artifacts/verification/RECORD-LINE-001.md
+
+  - id: RECORD-MULTIDOC-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: sample.start()
+    setup: create two developer-authored Markdown documents and select the second document
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - selected document belongs to the registered repository
+      - draft and tags for the selected document are saved independently of the other document
+    expected_visible_assertions:
+      - Record lists both documents and restores the selected second document
+      - saving one document does not replace the other document
+    evidence_filename: artifacts/verification/RECORD-MULTIDOC-001.md
+
+  - id: RESTORE-VALID-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: save Find, Understand, and Record context, then restart with the fixture unchanged and clean
+    fault_checkpoint: none
+    expected_persisted_assertions:
+      - latest current snapshot is valid for the registered repository and revision
+      - selected symbol, graph, source, document draft, and workspace context are restored
+    expected_visible_assertions:
+      - restart returns to the saved active workspace with the selected function and draft intact
+      - no recovery warning is shown
+    evidence_filename: artifacts/verification/RESTORE-VALID-001.md
+
+  - id: RESTORE-HEAD-CHANGED-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: save valid state, advance the fixture HEAD without changing the registered path, then restart
+    fault_checkpoint: repository_head_changed
+    expected_persisted_assertions:
+      - repository identity remains valid while revision-dependent references are reconfirmation_required
+      - saved FQN, source path, and line span remain stored without fuzzy remapping
+    expected_visible_assertions:
+      - restored context explicitly requires reconfirmation for changed-revision references
+      - no similar symbol or source line is automatically selected
+    evidence_filename: artifacts/verification/RESTORE-HEAD-CHANGED-001.md
+
+  - id: RESTORE-DIRTY-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: sample.start()
+    setup: save valid state, add an unrelated uncommitted fixture change, then restart
+    fault_checkpoint: repository_dirty
+    expected_persisted_assertions:
+      - dirty analysis identity marks dependent references reconfirmation_required
+      - repository worktree status before and after restoration is byte-identical
+    expected_visible_assertions:
+      - restored context warns that the dirty repository references require reconfirmation
+      - no Git mutation or automatic reconnection is presented
+    evidence_filename: artifacts/verification/RESTORE-DIRTY-001.md
+
+  - id: RESTORE-SYMBOL-MISSING-001
+    fixture_id: mixed-workspace-v1
+    repository_revision: fixture-mixed-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: save valid state, remove the exact symbol in a new fixture revision, reindex, then restart
+    fault_checkpoint: selected_symbol_missing
+    expected_persisted_assertions:
+      - repository and revision may validate while the exact symbol, source file, and line span require reconfirmation
+      - unresolved stored reference is retained verbatim
+    expected_visible_assertions:
+      - the missing selected function is visibly marked reconfirmation_required
+      - no nearby function is silently substituted
+    evidence_filename: artifacts/verification/RESTORE-SYMBOL-MISSING-001.md
+
+  - id: RECOVERY-PENDING-001
+    fixture_id: recovery-workspace-v1
+    repository_revision: fixture-recovery-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: establish a valid current snapshot, begin the next save, and interrupt after pending insertion
+    fault_checkpoint: after_pending_insert
+    expected_persisted_assertions:
+      - interrupted pending snapshot is not current
+      - immediately preceding valid snapshot remains readable
+    expected_visible_assertions:
+      - restart restores the prior valid context with a non-destructive recovery warning
+      - analysis documents remain unchanged
+    evidence_filename: artifacts/verification/RECOVERY-PENDING-001.md
+
+  - id: RECOVERY-VALIDATED-001
+    fixture_id: recovery-workspace-v1
+    repository_revision: fixture-recovery-workspace@v1
+    named_symbol: sample.start()
+    setup: establish a valid current snapshot and force snapshot validation to fail before promotion
+    fault_checkpoint: validation_failure_before_promotion
+    expected_persisted_assertions:
+      - failed candidate save leaves the previous current snapshot readable
+      - retrying the same recovery does not create another promoted snapshot
+    expected_visible_assertions:
+      - restart restores the last valid context with a non-destructive recovery warning
+      - draft and analysis documents are not discarded
+    evidence_filename: artifacts/verification/RECOVERY-VALIDATED-001.md
+
+  - id: RECOVERY-PROMOTION-001
+    fixture_id: recovery-workspace-v1
+    repository_revision: fixture-recovery-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: establish a valid current snapshot and interrupt during prior-current demotion and pending promotion
+    fault_checkpoint: during_current_promotion
+    expected_persisted_assertions:
+      - atomic transaction leaves either the old current or the validated new current readable
+      - recovery is idempotent and retains no ambiguous current state
+    expected_visible_assertions:
+      - restart restores a complete valid context and shows a recovery warning only when fallback was used
+      - analysis documents remain unchanged
+    evidence_filename: artifacts/verification/RECOVERY-PROMOTION-001.md
+
+  - id: RECOVERY-MIGRATION-001
+    fixture_id: recovery-workspace-v1
+    repository_revision: fixture-recovery-workspace@v1
+    named_symbol: sample.start()
+    setup: load a compatible older snapshot once, then attempt a newer incompatible snapshot
+    fault_checkpoint: incompatible_persistence_version
+    expected_persisted_assertions:
+      - compatible migration records migratedFromVersion transactionally exactly once
+      - newer incompatible snapshot remains unmodified and falls back to the preceding valid snapshot
+    expected_visible_assertions:
+      - compatible state restores normally after migration
+      - incompatible state restores the last valid context with a non-destructive recovery warning
+    evidence_filename: artifacts/verification/RECOVERY-MIGRATION-001.md
+
+  - id: OPERATION-FAILURE-001
+    fixture_id: recovery-workspace-v1
+    repository_revision: fixture-recovery-workspace@v1
+    named_symbol: com.example.OrderService.submit(Order)
+    setup: attempt automatic save while the local database reports a write failure
+    fault_checkpoint: database_write_failure
+    expected_persisted_assertions:
+      - failed save does not replace the current snapshot or modify analysis documents
+      - retrying after the fault clears is idempotent and creates one valid current snapshot
+    expected_visible_assertions:
+      - the active draft remains visible with a non-destructive save failure warning
+      - reopening restores the preceding valid context when available
+    evidence_filename: artifacts/verification/OPERATION-FAILURE-001.md
