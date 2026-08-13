@@ -1,15 +1,9 @@
 export const workspaces = [
   {
-    id: "find",
-    label: "Find",
-    description: "함수를 찾고 저장소를 선택합니다.",
-    primarySurface: "search-results",
-  },
-  {
-    id: "understand",
-    label: "Understand",
-    description: "호출 관계와 소스를 확인합니다.",
-    primarySurface: "caller-callee-graph",
+    id: "explore",
+    label: "Explore",
+    description: "함수를 찾고 호출 관계를 탐색합니다.",
+    primarySurface: "search-and-call-graph",
   },
   {
     id: "record",
@@ -21,4 +15,4 @@ export const workspaces = [
 
 export type Workspace = typeof workspaces[number]["id"];
 
-export const defaultWorkspace: Workspace = "find";
+export const defaultWorkspace: Workspace = "explore";

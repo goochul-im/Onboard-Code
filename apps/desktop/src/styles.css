@@ -22,9 +22,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .workspace-nav button:hover, .workspace-nav button.active { border-bottom-color: #8cb5ff; color: #edf4ff; background: transparent; }
 
 .workspace-grid { min-height: calc(100vh - 160px); }
+.workspace-explore { display: grid; grid-template-columns: 320px minmax(0, 1fr); }
 .sidebar { min-height: 0; padding: 1.25rem; overflow-y: auto; border-right: 1px solid #2b3445; background: #171d28; }
-.find-workspace { width: min(760px, 100%); min-height: calc(100vh - 160px); border-right: 0; }
-.find-workspace .symbol-list { max-height: none; }
+.explore-sidebar { min-height: calc(100vh - 160px); }
+.explore-sidebar .symbol-list { max-height: calc(100vh - 500px); }
 .field-label { display: block; margin: 1.1rem 0 .43rem; color: #b8c6da; font-size: .78rem; font-weight: 650; }
 input, select, textarea { width: 100%; border: 1px solid #3a465b; border-radius: 8px; padding: .62rem .7rem; color: #eef4ff; background: #111722; outline: none; }
 input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0 0 0 3px rgb(140 181 255 / 15%); }

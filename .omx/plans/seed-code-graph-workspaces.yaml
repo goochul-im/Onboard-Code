@@ -1,4 +1,4 @@
-goal: Redesign the local code-graph notebook desktop app into a focused three-workspace
+goal: Redesign the local code-graph notebook desktop app into a focused two-workspace
   developer tool that preserves all existing capabilities and fully restores analysis
   work across app restarts.
 task_type: code
@@ -32,7 +32,7 @@ constraints:
   per function, tags, draft and save behavior, and orphaned-note handling
 - Do not broaden v1 beyond local cloned Git repositories, Java and Python analysis, manual developer-authored notes, and function or method caller-callee graphs
 - Support macOS and Windows desktop builds; validate macOS in the available environment and record Windows as Not-tested with the missing execution environment named until equivalent Windows evidence is produced
-- Organize work into Find, Understand, and Record workspaces without enforcing a sequence
+- Organize work into an Explore workspace that combines function search and call-graph understanding, plus a separate Record workspace
 - Do not keep every tool continuously visible on one screen
 - Keep the selected function and writing context while users move between workspaces
 - Automatically save drafts and work context in the local database using versioned snapshots and atomic transactions
@@ -53,13 +53,13 @@ constraints:
   to a similar function or source line
 - Do not restore app window position or overall window size
 acceptance_criteria:
-- description: Selecting the same function fixture in Find, switching to Understand, and then switching to Record preserves the repository, selected function, active analysis document, unsaved title, body, and tags; returning to each workspace restores its prior task context.
+- description: Selecting a function in Explore and switching to Record preserves the repository, selected function, active analysis document, unsaved title, body, and tags; returning to Explore restores the same search and graph context.
   semantic_ac_key: ac_5aae9b324d99dcc4
-- description: On first paint, Find shows one primary search-and-results surface, Understand shows one primary caller-and-callee graph surface, and Record shows one primary source-and-Markdown split surface; all non-primary tools are closed by default or visually subordinate, open only on explicit action, and closing them returns focus to the primary surface without changing the selected function.
+- description: On first paint, Explore shows function search beside the caller-and-callee graph as one connected exploration surface, and Record shows one primary source-and-Markdown split surface; all non-primary tools are closed by default or visually subordinate, open only on explicit action, and closing them returns focus without changing the selected function.
   semantic_ac_key: ac_b979f093cc79a972
 - description: Each workspace removes always-visible dashboard cards, uppercase micro-labels, decorative badges, and redundant borders that do not communicate hierarchy or state, while every baseline capability remains reachable through the capability regression scenarios.
   semantic_ac_key: ac_5e6678230a8cda80
-- description: After the representative Find to Understand to Record scenario edits an unsaved analysis draft and restarts the app, the app restores the last valid active workspace, repository, search query and filters, selected function, graph center, depth, expanded nodes, zoom and pan, source location, scroll and selected line range, selected document, unsaved title, body and tags, Markdown cursor and scroll, and auxiliary-panel open and size state.
+- description: After the representative Explore to Record scenario edits an unsaved analysis draft and restarts the app, the app restores the last valid active workspace, repository, search query and filters, selected function, graph center, depth, expanded nodes, zoom and pan, source location, scroll and selected line range, selected document, unsaved title, body and tags, Markdown cursor and scroll, and auxiliary-panel open and size state.
   semantic_ac_key: ac_ac159230887a6459
 - description: Restoration first loads the registered repository by repository ID and canonical root path, then read-only inspects current branch, HEAD, and dirty state, then selects only a committed analysis run for the matching repository and revision identity, and finally validates selected symbol FQN and signature, file path, and line span; every mismatch uses the single status reconfirmation_required, remains visible with its stored context, and is never fuzzy-remapped.
   semantic_ac_key: ac_92c78a785288e6c7
@@ -96,7 +96,7 @@ ontology_schema:
     required: true
   - name: activeWorkspace
     type: string
-    description: Required enum containing Find, Understand, or Record; any other value invalidates this field and triggers snapshot recovery.
+    description: Required enum containing Explore or Record; legacy Find and Understand values migrate to Explore, and any other value invalidates this field and triggers snapshot recovery.
     required: true
   - name: repositoryReference
     type: object
@@ -140,7 +140,7 @@ ontology_schema:
     required: true
 evaluation_principles:
 - name: Workflow continuity
-  description: A developer can move among finding, understanding, and recording analysis
+  description: A developer can move between exploring and recording analysis
     without losing the selected function or writing context.
   weight: 0.35
 - name: Restart continuity
@@ -157,9 +157,9 @@ evaluation_principles:
   weight: 0.15
 exit_conditions:
 - name: Focused workspace flow is complete
-  description: The three workspaces provide the specified primary surfaces and on-demand
+  description: The two workspaces provide the specified primary surfaces and on-demand
     auxiliary tools while retaining work context during navigation.
-  criteria: Find, Understand, and Record behavior is observable and existing functionality
+  criteria: Explore and Record behavior is observable and existing functionality
     remains available.
 - name: Persistent analysis continuity is complete
   description: Valid session state and drafts are restored after restart, while invalid
@@ -176,7 +176,7 @@ verification:
 - Verify the canonical manifest apps/desktop/src-tauri/tests/fixtures/manifest.yaml contains every required stable scenario ID, fixed fixture ID, repository revision, named symbol, fault setup, persisted and visible assertions, and evidence filename.
 - Use stable checked-in Java and Python fixture repositories and named function symbols so every capability-matrix scenario is repeatable.
 - Record each matrix row with scenario ID, fixture repository and symbol, starting state, steps, expected visible and persisted results, actual result, pass or fail, platform and OS build, app build, timestamp, and evidence artifact paths; acceptable evidence is a targeted screenshot, test log, or database assertion appropriate to the claim.
-- On macOS, run the full capability matrix and an end-to-end Find to Understand to Record to restart scenario; verify both visible UI state and persisted local state.
+- On macOS, run the full capability matrix and an end-to-end Explore to Record to restart scenario; verify both visible UI state and persisted local state.
 - Verify first-paint hierarchy in each workspace: exactly one primary work surface is visible, non-primary tools are closed or subordinate, opening and closing an auxiliary tool does not change the selected function, and keyboard focus returns to the primary surface.
 - Test valid restore, changed HEAD, changed branch, deleted or renamed symbol, partially reconfirmation-required references, dirty worktree, interrupted writes at every defined promotion checkpoint, incompatible older and newer schema versions, idempotent migration, last-valid rollback, clean non-destructive fallback, cancelled analysis, and failed retry.
 - Repeat each persistence, migration, and fault-injection scenario at least twice using deterministic fixture state and controlled ordering; assert the same authoritative snapshot, note count, reference statuses, final database state, and visible result without relying on wall-clock timing.

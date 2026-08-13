@@ -609,7 +609,7 @@ function App() {
       </section>
 
       <div className={`workspace-grid workspace-${activeWorkspace}`}>
-        {activeWorkspace === "find" && <section className="sidebar find-workspace" aria-label="함수 찾기">
+        {activeWorkspace === "explore" && <section className="sidebar explore-sidebar" aria-label="함수 찾기">
           <label className="field-label" htmlFor="repository-select">저장소</label>
           <select
             id="repository-select"
@@ -675,7 +675,7 @@ function App() {
           )}
         </section>}
 
-        {activeWorkspace === "understand" && (
+        {activeWorkspace === "explore" && (
           <section className="graph-panel" aria-label="호출 관계">
             <div className="panel-heading">
               <div className="panel-title">
@@ -728,7 +728,7 @@ function App() {
               <div>
                 <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
               </div>
-              {!selectedSymbol && <p className="muted">Find에서 함수를 선택하면 새 분석 문서를 만들 수 있습니다.</p>}
+              {!selectedSymbol && <p className="muted">Explore에서 함수를 선택하면 새 분석 문서를 만들 수 있습니다.</p>}
             </header>
             <div className="detail-workspace record-detail-workspace">
               <section className="source-workspace" aria-label="선택한 함수 소스">
@@ -773,7 +773,7 @@ function App() {
                       );
                     })}
                   </pre>
-                ) : <p className="muted">Find에서 함수를 선택하면 여기에 소스가 표시됩니다.</p>}
+                ) : <p className="muted">Explore에서 함수를 선택하면 여기에 소스가 표시됩니다.</p>}
               </section>
               <MarkdownEditor
                 key={selectedNote?.id ?? `no-note-${selectedSymbol?.id ?? "no-symbol"}`}

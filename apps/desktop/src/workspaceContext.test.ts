@@ -10,7 +10,7 @@ interface AnalysisContextFixture {
 }
 
 describe("workspace navigation", () => {
-  it("preserves the selected analysis context from Find through Understand and Record", () => {
+  it("preserves the selected analysis context between Explore and Record", () => {
     const context: AnalysisContextFixture = {
       repositoryId: "fixture-repository",
       selectedFunctionId: "com.example.AuthController.createRefreshCookie",
@@ -21,10 +21,10 @@ describe("workspace navigation", () => {
         tags: "auth, cookie, unsaved",
       },
     };
-    let workspace: Workspace = "find";
+    let workspace: Workspace = "explore";
 
-    workspace = selectWorkspace(workspace, "understand");
-    expect(workspace).toBe("understand");
+    workspace = selectWorkspace(workspace, "explore");
+    expect(workspace).toBe("explore");
     expect(context).toEqual({
       repositoryId: "fixture-repository",
       selectedFunctionId: "com.example.AuthController.createRefreshCookie",
@@ -46,8 +46,8 @@ describe("workspace navigation", () => {
       tags: "auth, cookie, unsaved",
     });
 
-    workspace = selectWorkspace(workspace, "find");
-    expect(workspace).toBe("find");
+    workspace = selectWorkspace(workspace, "explore");
+    expect(workspace).toBe("explore");
     expect(context.repositoryId).toBe("fixture-repository");
     expect(context.draft.body).toBe("Unsaved reasoning about the expiry branch.");
   });
@@ -79,5 +79,13 @@ describe("workspace snapshot", () => {
   it("rejects incompatible and malformed snapshots", () => {
     expect(parseWorkspaceState('{"version":2}')).toBeNull();
     expect(parseWorkspaceState("not json")).toBeNull();
+  });
+
+  it("migrates legacy Find and Understand snapshots to Explore", () => {
+    const legacy = (activeWorkspace: string) => JSON.stringify({
+      version: 1, activeWorkspace, query: "", depth: 1, noteDrafts: [],
+    });
+    expect(parseWorkspaceState(legacy("find"))?.activeWorkspace).toBe("explore");
+    expect(parseWorkspaceState(legacy("understand"))?.activeWorkspace).toBe("explore");
   });
 });

@@ -39,12 +39,13 @@ export function serializeWorkspaceState(state: PersistedWorkspaceState): string 
 export function parseWorkspaceState(value: string): PersistedWorkspaceState | null {
   try {
     const state = JSON.parse(value) as Partial<PersistedWorkspaceState>;
-    if (state.version !== 1 || !isWorkspace(state.activeWorkspace)) return null;
+    const activeWorkspace = normalizeWorkspace(state.activeWorkspace);
+    if (state.version !== 1 || !activeWorkspace) return null;
     if (typeof state.query !== "string" || !Number.isInteger(state.depth)
       || state.depth! < 1 || state.depth! > 3 || !Array.isArray(state.noteDrafts)) return null;
     return {
       version: 1,
-      activeWorkspace: state.activeWorkspace,
+      activeWorkspace,
       query: state.query,
       depth: state.depth as number,
       selectedSymbol: state.selectedSymbol ?? null,
@@ -81,7 +82,12 @@ function validGraphViewport(value: unknown): value is { zoom: number; panX: numb
 }
 
 function isWorkspace(value: unknown): value is Workspace {
-  return value === "find" || value === "understand" || value === "record";
+  return value === "explore" || value === "record";
+}
+
+function normalizeWorkspace(value: unknown): Workspace | null {
+  if (isWorkspace(value)) return value;
+  return value === "find" || value === "understand" ? "explore" : null;
 }
 
 function validLineRange(value: unknown): value is { start: number; end: number } {
