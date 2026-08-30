@@ -2,13 +2,11 @@ import {
   forwardRef,
   useImperativeHandle,
   useEffect,
-  useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { findMarkdownBlock, parseMarkdownBlocks, replaceMarkdownRange } from "./markdownBlocks";
+import { replaceMarkdownRange } from "./markdownBlocks";
 
 interface DocumentOption {
   id: number;
@@ -35,7 +33,7 @@ interface MarkdownEditorProps {
   onEditorStateChange: (selection: { start: number; end: number }, scrollTop: number) => void;
 }
 
-type EditorMode = "live" | "preview";
+type EditorMode = "write" | "preview";
 
 export interface MarkdownEditorHandle {
   insertAtCursor: (text: string) => void;
@@ -60,22 +58,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   initialScrollTop,
   onEditorStateChange,
 }, ref) {
-  const [mode, setMode] = useState<EditorMode>("live");
-  const [activeOffset, setActiveOffset] = useState(initialSelection?.start ?? value.length);
+  const [mode, setMode] = useState<EditorMode>("write");
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const liveSurface = useRef<HTMLDivElement>(null);
   const valueRef = useRef(value);
   const selection = useRef(initialSelection ?? { start: value.length, end: value.length });
   valueRef.current = value;
-  const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
-  const activeBlock = findMarkdownBlock(blocks, activeOffset);
-  const activeBlockStart = useRef(activeBlock.start);
-  activeBlockStart.current = activeBlock.start;
   const editingDisabled = disabled || isSaving;
 
   useEffect(() => {
-    if (liveSurface.current) liveSurface.current.scrollTop = initialScrollTop;
-  }, [initialScrollTop, selectedDocumentId]);
+    if (mode !== "write") return;
+    requestAnimationFrame(() => {
+      const element = textarea.current;
+      if (!element) return;
+      const start = Math.min(initialSelection?.start ?? valueRef.current.length, valueRef.current.length);
+      const end = Math.min(initialSelection?.end ?? start, valueRef.current.length);
+      selection.current = { start, end };
+      element.setSelectionRange(start, end);
+      element.scrollTop = initialScrollTop;
+    });
+  }, [initialScrollTop, initialSelection, mode, selectedDocumentId]);
 
   const updateValue = (nextValue: string) => {
     valueRef.current = nextValue;
@@ -86,23 +87,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const element = textarea.current;
     if (element) {
       selection.current = {
-        start: activeBlockStart.current + element.selectionStart,
-        end: activeBlockStart.current + element.selectionEnd,
+        start: element.selectionStart,
+        end: element.selectionEnd,
       };
-      onEditorStateChange(selection.current, liveSurface.current?.scrollTop ?? initialScrollTop);
+      onEditorStateChange(selection.current, element.scrollTop);
     }
   };
 
   const focusAt = (start: number, end = start) => {
-    setMode("live");
-    setActiveOffset(start);
+    setMode("write");
     requestAnimationFrame(() => {
-      const block = findMarkdownBlock(parseMarkdownBlocks(valueRef.current), start);
-      const localStart = Math.max(0, Math.min(start - block.start, block.raw.length));
-      const localEnd = Math.max(localStart, Math.min(end - block.start, block.raw.length));
+      const safeStart = Math.max(0, Math.min(start, valueRef.current.length));
+      const safeEnd = Math.max(safeStart, Math.min(end, valueRef.current.length));
       textarea.current?.focus();
-      textarea.current?.setSelectionRange(localStart, localEnd);
-      selection.current = { start, end };
+      textarea.current?.setSelectionRange(safeStart, safeEnd);
+      selection.current = { start: safeStart, end: safeEnd };
     });
   };
 
@@ -122,36 +121,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const lineStart = valueRef.current.lastIndexOf("\n", selectionStart - 1) + 1;
     updateValue(replaceMarkdownRange(valueRef.current, lineStart, lineStart, prefix));
     focusAt(selectionStart + prefix.length);
-  };
-
-  const changeActiveBlock = (nextRaw: string, localStart: number, localEnd: number) => {
-    const next = replaceMarkdownRange(valueRef.current, activeBlock.start, activeBlock.end, nextRaw);
-    const globalStart = activeBlock.start + localStart;
-    const globalEnd = activeBlock.start + localEnd;
-    const nextBlock = findMarkdownBlock(parseMarkdownBlocks(next), globalStart);
-    updateValue(next);
-    selection.current = { start: globalStart, end: globalEnd };
-    setActiveOffset(globalStart);
-    if (nextBlock.start !== activeBlock.start) {
-      focusAt(globalStart, globalEnd);
-    }
-  };
-
-  const activateRenderedBlock = (start: number, contentLength: number) => {
-    const cursor = start + contentLength;
-    selection.current = { start: cursor, end: cursor };
-    focusAt(cursor);
-  };
-
-  const activateBlockFromKeyboard = (
-    event: KeyboardEvent<HTMLDivElement>,
-    start: number,
-    contentLength: number,
-  ) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      activateRenderedBlock(start, contentLength);
-    }
   };
 
   useImperativeHandle(ref, () => ({
@@ -216,13 +185,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
       <div className="markdown-mode-tabs" role="tablist" aria-label="노트 표시 방식">
         <button
-          className={mode === "live" ? "active" : ""}
+          className={mode === "write" ? "active" : ""}
           type="button"
           role="tab"
-          aria-selected={mode === "live"}
-          onClick={() => setMode("live")}
+          aria-selected={mode === "write"}
+          onClick={() => setMode("write")}
         >
-          라이브 편집
+          편집
         </button>
         <button
           className={mode === "preview" ? "active" : ""}
@@ -231,54 +200,33 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           aria-selected={mode === "preview"}
           onClick={() => setMode("preview")}
         >
-          전체 미리보기
+          미리보기
         </button>
       </div>
 
-      {mode === "live" ? (
-        disabled ? (
-          <div className="markdown-live-surface empty">새 분석 문서를 만든 뒤 내용을 작성하세요.</div>
-        ) : (
-          <div
-            ref={liveSurface}
-            className="markdown-live-surface"
-            aria-label="Markdown 라이브 편집기"
-            onScroll={(event) => onEditorStateChange(selection.current, event.currentTarget.scrollTop)}
-          >
-            {blocks.map((block) => block.start === activeBlock.start ? (
-              <textarea
-                ref={textarea}
-                className="markdown-live-input"
-                value={block.raw}
-                rows={Math.max(3, block.raw.split("\n").length + 1)}
-                onChange={(event) => changeActiveBlock(
-                  event.target.value,
-                  event.target.selectionStart,
-                  event.target.selectionEnd,
-                )}
-                onSelect={rememberSelection}
-                onKeyUp={rememberSelection}
-                onClick={rememberSelection}
-                onBlur={rememberSelection}
-                placeholder="## 이 함수의 역할"
-                aria-label="현재 Markdown 블록 편집"
-                readOnly={isSaving}
-                key={`active-${block.start}`}
-              />
-            ) : (
-              <div
-                className="markdown-live-block"
-                role="button"
-                tabIndex={0}
-                onClick={() => activateRenderedBlock(block.start, block.content.length)}
-                onKeyDown={(event) => activateBlockFromKeyboard(event, block.start, block.content.length)}
-                key={`rendered-${block.start}`}
-              >
-                <MarkdownPreview value={block.content} />
-              </div>
-            ))}
-          </div>
-        )
+      {mode === "write" ? (
+        <textarea
+          ref={textarea}
+          className="markdown-input"
+          value={value}
+          onChange={(event) => {
+            updateValue(event.target.value);
+            selection.current = {
+              start: event.target.selectionStart,
+              end: event.target.selectionEnd,
+            };
+            onEditorStateChange(selection.current, event.target.scrollTop);
+          }}
+          onSelect={rememberSelection}
+          onKeyUp={rememberSelection}
+          onClick={rememberSelection}
+          onBlur={rememberSelection}
+          onScroll={rememberSelection}
+          placeholder={disabled ? "새 분석 문서를 만든 뒤 내용을 작성하세요." : "## 이 함수의 역할"}
+          aria-label="Markdown 편집기"
+          disabled={disabled}
+          readOnly={isSaving}
+        />
       ) : (
         <MarkdownPreview value={value} />
       )}

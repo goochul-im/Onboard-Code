@@ -4,6 +4,7 @@ import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
+import { SymbolSearchResult } from "./components/SymbolSearchResult";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
 import {
   parseWorkspaceState,
@@ -645,18 +646,13 @@ function App() {
           />
           <div className="symbol-list" aria-label="함수 검색 결과">
             {symbols.map((symbol) => (
-              <button
-                className={`symbol-row ${selectedSymbol?.id === symbol.id ? "active" : ""}`}
-                key={symbol.id}
-                onClick={() => void selectSymbol(symbol.id)}
+              <SymbolSearchResult
+                symbol={symbol}
+                selected={selectedSymbol?.id === symbol.id}
                 disabled={busy}
-              >
-                <span className={`language-dot ${symbol.language}`} />
-                <span>
-                  <strong title={symbol.fqn}>{compactSymbolName(symbol.fqn)}</strong>
-                  <small>{symbol.relativePath}:{symbol.startLine}</small>
-                </span>
-              </button>
+                onSelect={(symbolId) => void selectSymbol(symbolId)}
+                key={symbol.id}
+              />
             ))}
             {repositoryId && symbols.length === 0 && <p className="muted">분석 후 함수를 검색할 수 있습니다.</p>}
           </div>
@@ -802,11 +798,6 @@ function App() {
       </div>
     </main>
   );
-}
-
-function compactSymbolName(fqn: string): string {
-  const parts = fqn.split(".").filter(Boolean);
-  return parts.length > 1 ? parts.slice(-2).join(".") : fqn;
 }
 
 function toNoteDraft(note: NoteRecord): NoteDraft {
