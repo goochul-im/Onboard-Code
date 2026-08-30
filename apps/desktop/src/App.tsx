@@ -4,6 +4,7 @@ import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
+import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
 import { SymbolSearchResult } from "./components/SymbolSearchResult";
 import { resolveSourceScrollTop } from "./components/sourceScroll";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
@@ -698,7 +699,7 @@ function App() {
           <section className="graph-panel" aria-label="호출 관계">
             <div className="panel-heading">
               <div className="panel-title">
-                <h2 title={selectedSymbol?.fqn}>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
+                <SelectedSymbolHeading symbol={selectedSymbol} />
               </div>
               <div className="graph-actions">
                 <label className="depth-control">

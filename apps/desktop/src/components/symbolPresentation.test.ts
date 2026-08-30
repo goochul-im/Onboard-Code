@@ -11,6 +11,15 @@ describe("symbol search presentation", () => {
     });
   });
 
+  it("hides the module path from an Explore heading", () => {
+    expect(presentSymbol(
+      "src.achievement-cluster.achievement-cluster.controller.AchievementClusterController.deleteAll",
+    )).toEqual({
+      methodName: "deleteAll",
+      className: "AchievementClusterController",
+    });
+  });
+
   it("labels a symbol without a containing scope as a global function", () => {
     expect(presentSymbol("bootstrap")).toEqual({
       methodName: "bootstrap",

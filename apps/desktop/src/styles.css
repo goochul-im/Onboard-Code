@@ -61,6 +61,8 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .panel-heading { justify-content: space-between; }
 .panel-title { min-width: 0; }
 .panel-title h2, .detail-title h2 { overflow: hidden; max-width: min(58vw, 800px); text-overflow: ellipsis; white-space: nowrap; }
+.selected-symbol-heading { min-width: 0; }
+.selected-symbol-heading p { overflow: hidden; max-width: min(58vw, 800px); margin: .18rem 0 0; color: #94a5bc; font-size: .76rem; font-weight: 650; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .depth-control { display: grid; gap: .28rem; color: #aebdd1; font-size: .7rem; }
 .depth-control select { width: 82px; padding: .35rem; }
 .graph-guide { margin: .7rem 0 0; color: #94a5bc; font-size: .76rem; }
