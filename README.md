@@ -15,7 +15,7 @@
 3. 왼쪽에서 함수를 검색하고, 중앙 그래프에서 caller/callee를 1~3단계로 펼칩니다.
 4. 오른쪽에서 코드 위치를 확인하고 노트와 태그를 직접 저장합니다.
 
-정적으로 확정할 수 없는 호출은 그래프의 확정 연결로 보이지 않으며, `후보가 여러 개` 또는 `대상을 찾지 못함`으로 표시합니다. reflection, dependency injection, 동적 import, monkey patching은 v1의 정확도 범위 밖입니다.
+정적으로 확정할 수 없는 호출은 그래프의 확정 연결로 보이지 않으며, `후보가 여러 개` 또는 `대상을 찾지 못함`으로 표시합니다. TypeScript에서는 명시적으로 타입이 선언된 생성자 주입 프로퍼티와 상대 import를 따라 호출 대상을 좁힙니다. reflection, 런타임 provider token, 동적 import, monkey patching은 현재 정확도 범위 밖입니다.
 
 ## 개발 시작
 

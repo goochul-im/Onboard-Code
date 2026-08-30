@@ -77,7 +77,22 @@ pub struct RawCall {
     pub target_name: String,
     pub display_target: String,
     pub is_qualified: bool,
+    pub receiver_type: Option<String>,
+    pub receiver_module: Option<String>,
     pub source_line: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TypeScriptTypeBinding {
+    type_name: String,
+    module_specifier: Option<String>,
+}
+
+struct TypeScriptAnalysisContext<'a> {
+    source: &'a str,
+    relative_path: &'a str,
+    module_name: &'a str,
+    imports: &'a HashMap<String, TypeScriptTypeBinding>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -146,14 +161,23 @@ pub fn analyze_file(
             &mut Vec::new(),
             &mut analysis,
         ),
-        SourceLanguage::TypeScript => collect_typescript_declarations(
-            root,
-            source,
-            relative_path,
-            &typescript_module_name(relative_path),
-            &mut Vec::new(),
-            &mut analysis,
-        ),
+        SourceLanguage::TypeScript => {
+            let imports = collect_typescript_imports(root, source);
+            let module_name = typescript_module_name(relative_path);
+            let context = TypeScriptAnalysisContext {
+                source,
+                relative_path,
+                module_name: &module_name,
+                imports: &imports,
+            };
+            collect_typescript_declarations(
+                root,
+                &context,
+                &mut Vec::new(),
+                &HashMap::new(),
+                &mut analysis,
+            );
+        }
     }
 
     Ok(analysis)
@@ -184,8 +208,8 @@ pub fn resolve_calls(symbols: &[IndexedSymbol], calls: &[RawCall]) -> Vec<Indexe
     calls
         .iter()
         .map(|call| {
-            let same_scope = by_id
-                .get(call.caller_symbol_id.as_str())
+            let caller = by_id.get(call.caller_symbol_id.as_str()).copied();
+            let same_scope = caller
                 .map(|caller| parent_scope(&caller.fqn))
                 .map(|scope| {
                     symbols
@@ -198,8 +222,7 @@ pub fn resolve_calls(symbols: &[IndexedSymbol], calls: &[RawCall]) -> Vec<Indexe
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let same_file = by_id
-                .get(call.caller_symbol_id.as_str())
+            let same_file = caller
                 .and_then(|caller| {
                     by_file_and_name
                         .get(&(
@@ -215,7 +238,40 @@ pub fn resolve_calls(symbols: &[IndexedSymbol], calls: &[RawCall]) -> Vec<Indexe
                 .cloned()
                 .unwrap_or_default();
 
-            let candidates = if !same_scope.is_empty() {
+            let typed_receiver_candidates = call.receiver_type.as_deref().map(|receiver_type| {
+                let by_type = global
+                    .iter()
+                    .copied()
+                    .filter(|symbol| symbol_owner_name(&symbol.fqn) == receiver_type)
+                    .collect::<Vec<_>>();
+                let by_import = call
+                    .receiver_module
+                    .as_deref()
+                    .zip(caller)
+                    .map(|(module_specifier, caller)| {
+                        by_type
+                            .iter()
+                            .copied()
+                            .filter(|symbol| {
+                                typescript_import_matches(
+                                    &caller.relative_path,
+                                    &symbol.relative_path,
+                                    module_specifier,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if by_import.is_empty() {
+                    by_type
+                } else {
+                    by_import
+                }
+            });
+
+            let candidates = if let Some(candidates) = typed_receiver_candidates {
+                candidates
+            } else if !same_scope.is_empty() {
                 same_scope
             } else if !call.is_qualified && !same_file.is_empty() {
                 same_file
@@ -224,7 +280,9 @@ pub fn resolve_calls(symbols: &[IndexedSymbol], calls: &[RawCall]) -> Vec<Indexe
             };
 
             if candidates.len() == 1
-                && (!call.is_qualified || is_self_reference(&call.display_target))
+                && (call.receiver_type.is_some()
+                    || !call.is_qualified
+                    || is_self_reference(&call.display_target))
             {
                 IndexedEdge {
                     caller_symbol_id: call.caller_symbol_id.clone(),
@@ -386,25 +444,232 @@ fn collect_python_declarations(
     }
 }
 
-fn collect_typescript_declarations(
+fn collect_typescript_imports(
+    root: Node<'_>,
+    source: &str,
+) -> HashMap<String, TypeScriptTypeBinding> {
+    let mut imports = HashMap::new();
+    collect_typescript_imports_from_node(root, source, &mut imports);
+    imports
+}
+
+fn collect_typescript_imports_from_node(
     node: Node<'_>,
     source: &str,
-    relative_path: &str,
-    module_name: &str,
+    imports: &mut HashMap<String, TypeScriptTypeBinding>,
+) {
+    if node.kind() == "import_statement" {
+        let Some(source_node) = node.child_by_field_name("source") else {
+            return;
+        };
+        let module_specifier = node_text(source_node, source)
+            .trim_matches(['\'', '"'])
+            .to_owned();
+        walk_children(node, |child| {
+            if child.kind() == "import_clause" {
+                collect_typescript_import_clause(child, source, &module_specifier, imports);
+            }
+        });
+        return;
+    }
+    walk_children(node, |child| {
+        collect_typescript_imports_from_node(child, source, imports)
+    });
+}
+
+fn collect_typescript_import_clause(
+    clause: Node<'_>,
+    source: &str,
+    module_specifier: &str,
+    imports: &mut HashMap<String, TypeScriptTypeBinding>,
+) {
+    walk_children(clause, |child| match child.kind() {
+        "identifier" => {
+            let local_name = node_text(child, source).to_owned();
+            imports.insert(
+                local_name.clone(),
+                TypeScriptTypeBinding {
+                    type_name: local_name,
+                    module_specifier: Some(module_specifier.to_owned()),
+                },
+            );
+        }
+        "named_imports" => walk_children(child, |specifier| {
+            if specifier.kind() != "import_specifier" {
+                return;
+            }
+            let Some(name_node) = specifier.child_by_field_name("name") else {
+                return;
+            };
+            let imported_name = node_text(name_node, source)
+                .trim_matches(['\'', '"'])
+                .to_owned();
+            let local_name = specifier
+                .child_by_field_name("alias")
+                .map(|alias| node_text(alias, source).to_owned())
+                .unwrap_or_else(|| imported_name.clone());
+            imports.insert(
+                local_name,
+                TypeScriptTypeBinding {
+                    type_name: imported_name,
+                    module_specifier: Some(module_specifier.to_owned()),
+                },
+            );
+        }),
+        _ => {}
+    });
+}
+
+fn collect_typescript_member_types(
+    class_node: Node<'_>,
+    source: &str,
+    imports: &HashMap<String, TypeScriptTypeBinding>,
+) -> HashMap<String, TypeScriptTypeBinding> {
+    let mut member_types = HashMap::new();
+    collect_typescript_member_types_from_node(
+        class_node,
+        class_node.id(),
+        source,
+        imports,
+        &mut member_types,
+    );
+    member_types
+}
+
+fn collect_typescript_member_types_from_node(
+    node: Node<'_>,
+    root_class_id: usize,
+    source: &str,
+    imports: &HashMap<String, TypeScriptTypeBinding>,
+    member_types: &mut HashMap<String, TypeScriptTypeBinding>,
+) {
+    if node.id() != root_class_id && matches!(node.kind(), "class_declaration" | "class") {
+        return;
+    }
+    if node.kind() == "public_field_definition" {
+        collect_typescript_typed_binding(node, source, imports, member_types);
+    } else if node.kind() == "method_definition"
+        && declaration_name(node, source).as_deref() == Some("constructor")
+    {
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            walk_children(parameters, |parameter| {
+                if matches!(
+                    parameter.kind(),
+                    "required_parameter" | "optional_parameter"
+                ) && is_typescript_parameter_property(parameter, source)
+                {
+                    collect_typescript_typed_binding(parameter, source, imports, member_types);
+                }
+            });
+        }
+        return;
+    }
+    walk_children(node, |child| {
+        collect_typescript_member_types_from_node(
+            child,
+            root_class_id,
+            source,
+            imports,
+            member_types,
+        )
+    });
+}
+
+fn collect_typescript_typed_binding(
+    node: Node<'_>,
+    source: &str,
+    imports: &HashMap<String, TypeScriptTypeBinding>,
+    member_types: &mut HashMap<String, TypeScriptTypeBinding>,
+) {
+    let Some(name_node) = node
+        .child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("pattern"))
+    else {
+        return;
+    };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    let Some(local_type_name) = find_typescript_type_identifier(type_node, source) else {
+        return;
+    };
+    let binding = imports
+        .get(&local_type_name)
+        .cloned()
+        .unwrap_or(TypeScriptTypeBinding {
+            type_name: local_type_name,
+            module_specifier: None,
+        });
+    member_types.insert(node_text(name_node, source).to_owned(), binding);
+}
+
+fn find_typescript_type_identifier(node: Node<'_>, source: &str) -> Option<String> {
+    if matches!(node.kind(), "type_identifier" | "identifier") {
+        return Some(node_text(node, source).to_owned());
+    }
+    let mut result = None;
+    walk_children(node, |child| {
+        if result.is_none() {
+            result = find_typescript_type_identifier(child, source);
+        }
+    });
+    result
+}
+
+fn is_typescript_parameter_property(node: Node<'_>, source: &str) -> bool {
+    let mut has_accessibility_modifier = false;
+    walk_children(node, |child| {
+        if child.kind() == "accessibility_modifier" {
+            has_accessibility_modifier = true;
+        }
+    });
+    has_accessibility_modifier
+        || node_text(node, source)
+            .split_whitespace()
+            .any(|part| part == "readonly")
+}
+
+fn typescript_receiver_binding(
+    target_node: Node<'_>,
+    source: &str,
+    member_types: &HashMap<String, TypeScriptTypeBinding>,
+) -> Option<TypeScriptTypeBinding> {
+    if target_node.kind() != "member_expression" {
+        return None;
+    }
+    let receiver = target_node.child_by_field_name("object")?;
+    if receiver.kind() != "member_expression" {
+        return None;
+    }
+    let receiver_root = receiver.child_by_field_name("object")?;
+    if node_text(receiver_root, source).trim() != "this" {
+        return None;
+    }
+    let property = receiver.child_by_field_name("property")?;
+    member_types
+        .get(node_text(property, source).trim())
+        .cloned()
+}
+
+fn collect_typescript_declarations(
+    node: Node<'_>,
+    context: &TypeScriptAnalysisContext<'_>,
     scopes: &mut Vec<String>,
+    member_types: &HashMap<String, TypeScriptTypeBinding>,
     analysis: &mut FileAnalysis,
 ) {
     match node.kind() {
         "class_declaration" | "class" => {
-            if let Some(name) = declaration_name(node, source) {
+            let class_member_types =
+                collect_typescript_member_types(node, context.source, context.imports);
+            if let Some(name) = declaration_name(node, context.source) {
                 scopes.push(name);
                 walk_children(node, |child| {
                     collect_typescript_declarations(
                         child,
-                        source,
-                        relative_path,
-                        module_name,
+                        context,
                         scopes,
+                        &class_member_types,
                         analysis,
                     )
                 });
@@ -413,43 +678,28 @@ fn collect_typescript_declarations(
                 walk_children(node, |child| {
                     collect_typescript_declarations(
                         child,
-                        source,
-                        relative_path,
-                        module_name,
+                        context,
                         scopes,
+                        &class_member_types,
                         analysis,
                     )
                 });
             }
         }
         "function_declaration" | "generator_function_declaration" | "method_definition" => {
-            let Some(name) = declaration_name(node, source) else {
+            let Some(name) = declaration_name(node, context.source) else {
                 analysis.diagnostics.push(format!(
-                    "{relative_path}: TypeScript 함수 이름을 읽을 수 없습니다."
+                    "{}: TypeScript 함수 이름을 읽을 수 없습니다.",
+                    context.relative_path
                 ));
                 return;
             };
-            record_typescript_function(
-                node,
-                &name,
-                source,
-                relative_path,
-                module_name,
-                scopes,
-                analysis,
-            );
+            record_typescript_function(node, &name, context, scopes, member_types, analysis);
 
             scopes.push(name);
             if let Some(body) = node.child_by_field_name("body") {
                 walk_children(body, |child| {
-                    collect_typescript_declarations(
-                        child,
-                        source,
-                        relative_path,
-                        module_name,
-                        scopes,
-                        analysis,
-                    )
+                    collect_typescript_declarations(child, context, scopes, member_types, analysis)
                 });
             }
             scopes.pop();
@@ -460,14 +710,13 @@ fn collect_typescript_declarations(
                 matches!(value.kind(), "arrow_function" | "function_expression")
             });
             if is_function {
-                if let Some(name) = declaration_name(node, source) {
+                if let Some(name) = declaration_name(node, context.source) {
                     record_typescript_function(
                         node,
                         &name,
-                        source,
-                        relative_path,
-                        module_name,
+                        context,
                         scopes,
+                        member_types,
                         analysis,
                     );
                     scopes.push(name);
@@ -475,10 +724,9 @@ fn collect_typescript_declarations(
                         walk_children(body, |child| {
                             collect_typescript_declarations(
                                 child,
-                                source,
-                                relative_path,
-                                module_name,
+                                context,
                                 scopes,
+                                member_types,
                                 analysis,
                             )
                         });
@@ -487,26 +735,12 @@ fn collect_typescript_declarations(
                 }
             } else {
                 walk_children(node, |child| {
-                    collect_typescript_declarations(
-                        child,
-                        source,
-                        relative_path,
-                        module_name,
-                        scopes,
-                        analysis,
-                    )
+                    collect_typescript_declarations(child, context, scopes, member_types, analysis)
                 });
             }
         }
         _ => walk_children(node, |child| {
-            collect_typescript_declarations(
-                child,
-                source,
-                relative_path,
-                module_name,
-                scopes,
-                analysis,
-            )
+            collect_typescript_declarations(child, context, scopes, member_types, analysis)
         }),
     }
 }
@@ -514,10 +748,9 @@ fn collect_typescript_declarations(
 fn record_typescript_function(
     node: Node<'_>,
     name: &str,
-    source: &str,
-    relative_path: &str,
-    module_name: &str,
+    context: &TypeScriptAnalysisContext<'_>,
     scopes: &[String],
+    member_types: &HashMap<String, TypeScriptTypeBinding>,
     analysis: &mut FileAnalysis,
 ) {
     let function_node = node
@@ -526,14 +759,19 @@ fn record_typescript_function(
         .unwrap_or(node);
     let signature = function_node
         .child_by_field_name("parameters")
-        .map(|parameters| normalize_signature(node_text(parameters, source)))
+        .map(|parameters| normalize_signature(node_text(parameters, context.source)))
         .or_else(|| {
             function_node
                 .child_by_field_name("parameter")
-                .map(|parameter| format!("({})", normalize_signature(node_text(parameter, source))))
+                .map(|parameter| {
+                    format!(
+                        "({})",
+                        normalize_signature(node_text(parameter, context.source))
+                    )
+                })
         })
         .unwrap_or_else(|| "()".into());
-    let fqn = qualified_name(module_name, scopes, name);
+    let fqn = qualified_name(context.module_name, scopes, name);
     let symbol = build_symbol(
         SourceLanguage::TypeScript,
         if node.kind() == "method_definition" || node.kind() == "public_field_definition" {
@@ -543,17 +781,18 @@ fn record_typescript_function(
         },
         fqn,
         signature,
-        relative_path,
+        context.relative_path,
         node,
-        source,
+        context.source,
     );
     collect_typescript_calls(
         function_node
             .child_by_field_name("body")
             .unwrap_or(function_node),
-        source,
+        context.source,
         &symbol,
         &mut analysis.calls,
+        member_types,
         true,
     );
     analysis.symbols.push(symbol);
@@ -581,6 +820,8 @@ fn collect_java_calls(
                 target_name,
                 is_qualified: node.child_by_field_name("object").is_some(),
                 display_target,
+                receiver_type: None,
+                receiver_module: None,
                 source_line: node.start_position().row as u32 + 1,
             });
         }
@@ -617,6 +858,8 @@ fn collect_python_calls(
                 is_qualified: target_node.kind() != "identifier",
                 target_name,
                 display_target,
+                receiver_type: None,
+                receiver_module: None,
                 source_line: node.start_position().row as u32 + 1,
             });
         }
@@ -632,6 +875,7 @@ fn collect_typescript_calls(
     source: &str,
     caller: &IndexedSymbol,
     calls: &mut Vec<RawCall>,
+    member_types: &HashMap<String, TypeScriptTypeBinding>,
     is_root: bool,
 ) {
     let separately_indexed_function =
@@ -657,6 +901,7 @@ fn collect_typescript_calls(
                 .find(|part| !part.is_empty())
                 .unwrap_or(&display_target)
                 .to_owned();
+            let receiver = typescript_receiver_binding(target_node, source, member_types);
             calls.push(RawCall {
                 caller_symbol_id: caller.id.clone(),
                 caller_fqn: caller.fqn.clone(),
@@ -664,13 +909,15 @@ fn collect_typescript_calls(
                 is_qualified: target_node.kind() != "identifier",
                 target_name,
                 display_target,
+                receiver_type: receiver.as_ref().map(|binding| binding.type_name.clone()),
+                receiver_module: receiver.and_then(|binding| binding.module_specifier),
                 source_line: node.start_position().row as u32 + 1,
             });
         }
     }
 
     walk_children(node, |child| {
-        collect_typescript_calls(child, source, caller, calls, false)
+        collect_typescript_calls(child, source, caller, calls, member_types, false)
     });
 }
 
@@ -762,6 +1009,48 @@ fn parent_scope(fqn: &str) -> &str {
 
 fn simple_name(fqn: &str) -> &str {
     fqn.rsplit('.').next().unwrap_or(fqn)
+}
+
+fn symbol_owner_name(fqn: &str) -> &str {
+    simple_name(parent_scope(fqn))
+}
+
+fn typescript_import_matches(
+    caller_path: &str,
+    candidate_path: &str,
+    module_specifier: &str,
+) -> bool {
+    if !module_specifier.starts_with('.') {
+        return true;
+    }
+    let mut parts = caller_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    parts.pop();
+    for part in module_specifier.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            value => parts.push(value),
+        }
+    }
+    let expected = strip_typescript_module_extension(&parts.join("/"));
+    let candidate = strip_typescript_module_extension(candidate_path);
+    candidate == expected || candidate == format!("{expected}/index")
+}
+
+fn strip_typescript_module_extension(path: &str) -> String {
+    [
+        ".d.ts", ".d.tsx", ".d.mts", ".d.cts", ".tsx", ".mts", ".cts", ".ts", ".jsx", ".mjs",
+        ".cjs", ".js",
+    ]
+    .iter()
+    .find_map(|extension| path.strip_suffix(extension))
+    .unwrap_or(path)
+    .to_owned()
 }
 
 fn is_self_reference(target: &str) -> bool {
@@ -948,6 +1237,82 @@ class UserService {
                         && symbol.fqn == "src.user-service.UserService.find"
                 })
         }));
+    }
+
+    #[test]
+    fn resolves_typescript_constructor_injected_receiver_through_its_import() {
+        let controller = analyze_file(
+            SourceLanguage::TypeScript,
+            "src/achievement-cluster/achievement-cluster.controller.ts",
+            r#"
+import { AchievementClusterService } from './achievement-cluster.service';
+
+export class AchievementClusterController {
+    constructor(private readonly service: AchievementClusterService) {}
+
+    deleteAll() {
+        return this.service.deleteAllVector();
+    }
+}
+            "#,
+        )
+        .unwrap();
+        let service = analyze_file(
+            SourceLanguage::TypeScript,
+            "src/achievement-cluster/achievement-cluster.service.ts",
+            r#"
+export class AchievementClusterService {
+    async deleteAllVector() {}
+}
+            "#,
+        )
+        .unwrap();
+        let duplicate = analyze_file(
+            SourceLanguage::TypeScript,
+            "src/legacy/achievement-cluster.service.ts",
+            r#"
+export class AchievementClusterService {
+    async deleteAllVector() {}
+}
+            "#,
+        )
+        .unwrap();
+
+        let symbols = controller
+            .symbols
+            .iter()
+            .chain(service.symbols.iter())
+            .chain(duplicate.symbols.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let call = controller
+            .calls
+            .iter()
+            .find(|call| call.target_name == "deleteAllVector")
+            .expect("controller call is collected");
+        assert_eq!(
+            call.receiver_type.as_deref(),
+            Some("AchievementClusterService")
+        );
+        assert_eq!(
+            call.receiver_module.as_deref(),
+            Some("./achievement-cluster.service")
+        );
+
+        let edge = resolve_calls(&symbols, &controller.calls)
+            .into_iter()
+            .find(|edge| edge.caller_symbol_id == call.caller_symbol_id)
+            .expect("controller edge is resolved");
+        let target = symbols
+            .iter()
+            .find(|symbol| edge.callee_symbol_id.as_deref() == Some(symbol.id.as_str()))
+            .expect("resolved target exists");
+
+        assert_eq!(edge.confidence, EdgeConfidence::Resolved);
+        assert_eq!(
+            target.fqn,
+            "src.achievement-cluster.achievement-cluster.service.AchievementClusterService.deleteAllVector"
+        );
     }
 
     #[test]
