@@ -1,53 +1,53 @@
 # Design QA
 
-- Source visual truth: `/var/folders/5h/8t8n0xtx23s3_9vr9crbw07w0000gn/T/codex-clipboard-08953d00-03b3-40a7-928d-a090bfa5d798.png`
-- Explore implementation: `/private/tmp/onboard-code-explore-qa-final.png`
-- Markdown implementation: `/private/tmp/onboard-code-markdown-final.png`
+- Source visual truth: `/private/tmp/onboard-code-graph-before.png` plus the user's requirement that the next action float beside the selected method node
+- Selected-node implementation: `/private/tmp/onboard-code-graph-after.png`
+- Changed-selection implementation: `/private/tmp/onboard-code-graph-moved.png`
+- Zoom implementation: `/private/tmp/onboard-code-graph-zoom.png`
 - Browser viewport: 1280 × 720 CSS px
-- Source pixels: 578 × 608
-- Implementation pixels: 1280 × 720
+- Source and implementation pixels: 1280 × 720
 - Browser device pixel ratio: 2; browser screenshots were returned at CSS-pixel dimensions
-- State: dark theme, populated Explore results, selected first result; populated Markdown document in edit mode
+- State: dark theme, three-node TypeScript call graph, selected node, actionable source available
 
 ## Full-view comparison evidence
 
-The source and implementation were opened together. The existing dark palette, cyan language marker, compact sidebar, and quiet border treatment remain consistent. The requested hierarchy is now visible: the method name is the strongest first line, the containing class is the second line, and the source path is the smallest third line. This intentionally increases each row height compared with the former two-line result.
+The before and after captures were opened together. The former header action was visually detached from the selected method. In the implementation, the header retains only graph depth while the selected node owns the `소스·노트 열기` action beside its right edge. Graph proportions, node typography, edge treatment, dark palette, and selected-node highlight remain unchanged.
 
-The Markdown document was checked separately because it is not shown in the source crop. The old `라이브 편집` tab is absent; `편집` exposes one continuous textarea and `미리보기` renders the entered heading and list before returning to the editable state.
+## Focused interaction evidence
 
-## Focused region comparison evidence
-
-The Explore result list was inspected at its rendered sidebar width. Method, class, and path values were separately present in the visible DOM for every fixture result. Long paths truncate without widening the row, and the list reported no horizontal overflow before the final scrollbar polish. No additional image assets or icons were introduced.
+The first selected node displayed a 126 × 34 px action at its right edge. Selecting the lower-left method moved both the selected highlight and action to that node. Zooming the graph kept the action aligned. The button was activated by its accessible name and produced the fixture's successful open state. The final browser state had no console errors.
 
 ## Findings
 
 - No remaining P0, P1, or P2 findings.
-- Typography: method names have the clearest weight and size; class and path step down consistently and truncate independently.
-- Spacing: three-line rows retain compact rhythm without overlap; the language marker aligns with the title line.
-- Colors: the existing dark tokens and language colors are preserved.
-- Images and assets: the target contains no raster assets requiring recreation.
-- Copy: `라이브 편집` was replaced by `편집`; `전체 미리보기` was shortened to `미리보기`.
+- Typography: the action uses the existing compact UI scale and does not compete with node labels.
+- Spacing: a 12 px node gap preserves a visible relationship without touching the node border; right, left, and below placements stay inside the graph viewport.
+- Colors: the existing primary blue communicates the next action while the yellow selected-node border remains the selection signal.
+- Images and assets: this interaction contains no raster or custom icon assets.
+- Copy: the action remains `소스·노트 열기`; helper copy now explains that the button appears beside a selected node.
+- Accessibility: the overlay is a native button with an explicit accessible label and keyboard focus ring.
 
 ## Comparison history
 
-1. First implementation capture exposed a light browser scrollbar and horizontal overflow in the result list.
-2. The row was constrained to its container and the list received dark, thin scrollbar styling.
-3. Post-fix evidence shows a dark scrollbar, independently truncated text, and no clipped method title.
+1. The source capture confirmed the header button was separated from the selection target.
+2. The first implementation comparison showed the button beside the selected node with no actionable visual mismatch.
+3. Selection-change and zoom captures confirmed the action follows the node rather than behaving as a fixed overlay.
 
 ## Interaction checks
 
-- Explore result methods were readable as `createAchievement`, `deleteAchievement`, and `findAchievement` before their class names.
-- `라이브 편집` tab count: 0.
-- `편집` and `미리보기` tab count: 1 each.
-- Entered Markdown rendered as a heading and list in preview and remained editable after returning.
-- Browser console errors in the final fixture state: none.
+- Selected-node button visibility: passed.
+- Selecting another node moves the action: passed.
+- Zoom keeps the action aligned: passed.
+- Clicking the action invokes the open-detail callback: passed.
+- Offscreen node placement returns no floating action: covered by unit test.
+- Browser console errors: none.
 
 ## Implementation checklist
 
-- [x] Remove block-based live Markdown editing.
-- [x] Preserve toolbar formatting and line-reference insertion against the continuous textarea.
-- [x] Put method, class, and file path on separate visual levels.
-- [x] Prevent horizontal overflow for long paths.
-- [x] Verify edit/preview switching and visible result hierarchy.
+- [x] Remove the detached header action.
+- [x] Float the action beside the selected graph node.
+- [x] Reposition on selection, pan, zoom, render, and resize.
+- [x] Avoid graph-edge overflow and hide the action for offscreen nodes.
+- [x] Preserve native button focus and disabled/loading states.
 
 final result: passed

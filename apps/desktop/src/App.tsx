@@ -686,22 +686,18 @@ function App() {
                     <option value={3}>3단계</option>
                   </select>
                 </label>
-                <button
-                  className="secondary-button small"
-                  onClick={() => setActiveWorkspace((current) => selectWorkspace(current, "record"))}
-                  disabled={!selectedSymbol || !sourceFile}
-                >
-                  소스·노트 열기
-                </button>
               </div>
             </div>
-            <p className="graph-guide">노드를 선택해 그래프의 중심을 바꾸고, 소스·노트 열기에서 함수 상세를 확인하세요.</p>
+            <p className="graph-guide">노드를 선택한 뒤 옆에 나타나는 버튼으로 소스와 분석 문서를 여세요.</p>
             <CallGraph
               graph={graph}
               selectedSymbolId={selectedSymbol?.id ?? null}
               onSelectSymbol={(id) => void selectSymbol(id)}
               viewport={graphViewport}
               onViewportChange={rememberGraphViewport}
+              canOpenDetail={Boolean(selectedSymbol && sourceFile) && !busy}
+              isSelectionLoading={busy}
+              onOpenDetail={() => setActiveWorkspace((current) => selectWorkspace(current, "record"))}
             />
             {unresolvedEdges.length > 0 && (
               <div className="uncertain-calls">

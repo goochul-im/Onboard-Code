@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Core } from "cytoscape";
 import type { GraphData } from "../types";
+import { placeGraphNodeAction, type GraphNodeActionPosition } from "./graphNodeAction";
 
 interface CallGraphProps {
   graph: GraphData | null;
@@ -8,12 +9,29 @@ interface CallGraphProps {
   onSelectSymbol: (symbolId: string) => void;
   viewport: GraphViewport | null;
   onViewportChange: (viewport: GraphViewport) => void;
+  canOpenDetail: boolean;
+  isSelectionLoading: boolean;
+  onOpenDetail: () => void;
 }
 
 export interface GraphViewport { zoom: number; panX: number; panY: number }
 
-export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, onViewportChange }: CallGraphProps) {
+const ACTION_WIDTH = 126;
+const ACTION_HEIGHT = 34;
+
+export function CallGraph({
+  graph,
+  selectedSymbolId,
+  onSelectSymbol,
+  viewport,
+  onViewportChange,
+  canOpenDetail,
+  isSelectionLoading,
+  onOpenDetail,
+}: CallGraphProps) {
   const container = useRef<HTMLDivElement>(null);
+  const [actionPosition, setActionPosition] = useState<GraphNodeActionPosition | null>(null);
+  const positionedSymbolId = useRef<string | null>(null);
   const selectSymbol = useRef(onSelectSymbol);
   const viewportChanged = useRef(onViewportChange);
   selectSymbol.current = onSelectSymbol;
@@ -26,6 +44,8 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, o
 
     let destroyed = false;
     let graphInstance: Core | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    let positionFrame: number | undefined;
 
     void import("cytoscape").then(({ default: cytoscape }) => {
       if (destroyed || !container.current) {
@@ -132,6 +152,31 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, o
       graphInstance.on("tap", "node", (event) => {
         selectSymbol.current(event.target.id());
       });
+
+      const updateActionPosition = () => {
+        if (!graphInstance || !container.current || !selectedSymbolId) {
+          positionedSymbolId.current = null;
+          setActionPosition(null);
+          return;
+        }
+        const selectedNode = graphInstance.getElementById(selectedSymbolId);
+        if (selectedNode.empty()) {
+          positionedSymbolId.current = null;
+          setActionPosition(null);
+          return;
+        }
+        const box = selectedNode.renderedBoundingBox();
+        const position = placeGraphNodeAction(
+          box,
+          container.current.clientWidth,
+          container.current.clientHeight,
+          ACTION_WIDTH,
+          ACTION_HEIGHT,
+        );
+        positionedSymbolId.current = position ? selectedSymbolId : null;
+        setActionPosition(position);
+      };
+
       if (viewport) {
         graphInstance.zoom(viewport.zoom);
         graphInstance.pan({ x: viewport.panX, y: viewport.panY });
@@ -140,10 +185,16 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, o
         const pan = graphInstance?.pan() ?? { x: 0, y: 0 };
         viewportChanged.current({ zoom: graphInstance?.zoom() ?? 1, panX: pan.x, panY: pan.y });
       });
+      graphInstance.on("zoom pan resize render", updateActionPosition);
+      resizeObserver = new ResizeObserver(updateActionPosition);
+      resizeObserver.observe(container.current);
+      positionFrame = requestAnimationFrame(updateActionPosition);
     });
 
     return () => {
       destroyed = true;
+      if (positionFrame !== undefined) cancelAnimationFrame(positionFrame);
+      resizeObserver?.disconnect();
       graphInstance?.destroy();
     };
   }, [graph, selectedSymbolId]);
@@ -152,7 +203,23 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, o
     return <div className="graph-empty">함수를 선택하면 호출 그래프가 여기에 표시됩니다.</div>;
   }
 
-  return <div ref={container} className="call-graph" aria-label="함수 호출 그래프" />;
+  return (
+    <div className="call-graph-shell">
+      <div ref={container} className="call-graph" aria-label="함수 호출 그래프" />
+      {actionPosition && positionedSymbolId.current === selectedSymbolId && (
+        <button
+          className={`graph-node-action placement-${actionPosition.placement}`}
+          type="button"
+          style={{ left: actionPosition.left, top: actionPosition.top }}
+          onClick={onOpenDetail}
+          disabled={!canOpenDetail}
+          aria-label="선택한 메서드의 소스와 노트 열기"
+        >
+          {isSelectionLoading ? "불러오는 중…" : "소스·노트 열기"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function formatNodeLabel(fqn: string): string {

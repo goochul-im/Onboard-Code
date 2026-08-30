@@ -64,7 +64,13 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .depth-control { display: grid; gap: .28rem; color: #aebdd1; font-size: .7rem; }
 .depth-control select { width: 82px; padding: .35rem; }
 .graph-guide { margin: .7rem 0 0; color: #94a5bc; font-size: .76rem; }
-.call-graph, .graph-empty { flex: 1; min-height: 420px; margin-top: 1rem; background: #0d121b; }
+.call-graph-shell, .graph-empty { flex: 1; min-height: 420px; margin-top: 1rem; background: #0d121b; }
+.call-graph-shell { position: relative; overflow: hidden; }
+.call-graph { position: absolute; inset: 0; }
+.graph-node-action { position: absolute; z-index: 3; width: 126px; height: 34px; border: 1px solid #bad3ff; border-radius: 8px; padding: 0 .65rem; color: #102034; background: #9bc0ff; box-shadow: 0 8px 24px rgb(0 0 0 / 35%); font-size: .72rem; font-weight: 750; white-space: nowrap; }
+.graph-node-action:hover:not(:disabled) { background: #b1cdff; }
+.graph-node-action:focus-visible { outline: 2px solid #f5c979; outline-offset: 2px; }
+.graph-node-action:disabled { color: #9dacbf; border-color: #53637d; background: #283345; }
 .graph-empty { display: grid; place-items: center; padding: 2rem; color: #91a1b7; text-align: center; }
 .uncertain-calls { margin-top: .8rem; border: 1px solid #584e35; border-radius: 8px; padding: .7rem .8rem; color: #ead9ac; background: #2b271c; font-size: .75rem; }
 .uncertain-calls ul { max-height: 90px; margin: .5rem 0 0; padding-left: 1.2rem; overflow: auto; }
