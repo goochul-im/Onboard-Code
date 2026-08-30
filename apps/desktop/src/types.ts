@@ -1,4 +1,4 @@
-export type SourceLanguage = "java" | "python";
+export type SourceLanguage = "java" | "python" | "typescript";
 export type EdgeConfidence = "resolved" | "ambiguous" | "unresolved";
 
 export interface RepositoryRecord {

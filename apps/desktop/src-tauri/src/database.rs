@@ -149,7 +149,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS symbols (
               id TEXT PRIMARY KEY NOT NULL,
               repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-              language TEXT NOT NULL CHECK (language IN ('java', 'python')),
+              language TEXT NOT NULL CHECK (language IN ('java', 'python', 'typescript')),
               kind TEXT NOT NULL,
               fqn TEXT NOT NULL,
               signature TEXT NOT NULL,
@@ -220,6 +220,7 @@ impl Database {
             );
             "#,
         )?;
+        ensure_symbols_language_schema(&mut connection)?;
         ensure_notes_schema(&mut connection)?;
 
         Ok(Self { connection })
@@ -988,6 +989,7 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSymbol> {
     let language = match row.get::<_, String>(1)?.as_str() {
         "java" => crate::analysis::SourceLanguage::Java,
         "python" => crate::analysis::SourceLanguage::Python,
+        "typescript" => crate::analysis::SourceLanguage::TypeScript,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     Ok(IndexedSymbol {
@@ -1030,6 +1032,62 @@ fn row_to_workspace_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worksp
         status: row.get(6)?,
         created_at: row.get(7)?,
     })
+}
+
+fn ensure_symbols_language_schema(connection: &mut Connection) -> rusqlite::Result<()> {
+    let table_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'symbols'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_sql.to_lowercase().contains("'typescript'") {
+        return Ok(());
+    }
+
+    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let migration = (|| -> rusqlite::Result<()> {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE symbols_v2 (
+              id TEXT PRIMARY KEY NOT NULL,
+              repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+              language TEXT NOT NULL CHECK (language IN ('java', 'python', 'typescript')),
+              kind TEXT NOT NULL,
+              fqn TEXT NOT NULL,
+              signature TEXT NOT NULL,
+              relative_path TEXT NOT NULL,
+              start_line INTEGER NOT NULL,
+              end_line INTEGER NOT NULL,
+              ast_fingerprint TEXT NOT NULL,
+              UNIQUE(repository_id, language, fqn, signature, relative_path)
+            );
+
+            INSERT INTO symbols_v2 (
+              id, repository_id, language, kind, fqn, signature, relative_path,
+              start_line, end_line, ast_fingerprint
+            )
+            SELECT id, repository_id, language, kind, fqn, signature, relative_path,
+                   start_line, end_line, ast_fingerprint
+            FROM symbols;
+
+            DROP TABLE symbols;
+            ALTER TABLE symbols_v2 RENAME TO symbols;
+            "#,
+        )?;
+        transaction.commit()
+    })();
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    migration?;
+
+    let has_violation = connection
+        .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+        .optional()?
+        .unwrap_or(false);
+    if has_violation {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
 }
 
 fn ensure_notes_schema(connection: &mut Connection) -> rusqlite::Result<()> {
@@ -1419,6 +1477,90 @@ mod tests {
             "reopening must not duplicate the migrated document"
         );
         drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_legacy_symbol_language_constraint_for_typescript() {
+        let path = temporary_database_path("legacy-symbol-language-migration");
+        let connection = Connection::open(&path).expect("legacy database opens");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE repositories (
+                  id TEXT PRIMARY KEY NOT NULL,
+                  root_path TEXT UNIQUE NOT NULL,
+                  display_name TEXT NOT NULL,
+                  branch TEXT NOT NULL,
+                  head TEXT NOT NULL,
+                  is_dirty INTEGER NOT NULL CHECK (is_dirty IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE symbols (
+                  id TEXT PRIMARY KEY NOT NULL,
+                  repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                  language TEXT NOT NULL CHECK (language IN ('java', 'python')),
+                  kind TEXT NOT NULL,
+                  fqn TEXT NOT NULL,
+                  signature TEXT NOT NULL,
+                  relative_path TEXT NOT NULL,
+                  start_line INTEGER NOT NULL,
+                  end_line INTEGER NOT NULL,
+                  ast_fingerprint TEXT NOT NULL,
+                  UNIQUE(repository_id, language, fqn, signature, relative_path)
+                );
+                INSERT INTO repositories (id, root_path, display_name, branch, head, is_dirty)
+                VALUES ('repo_legacy', '/tmp/legacy-typescript', 'legacy-typescript', 'main', 'abc123', 0);
+                INSERT INTO symbols (
+                  id, repository_id, language, kind, fqn, signature, relative_path,
+                  start_line, end_line, ast_fingerprint
+                ) VALUES (
+                  'symbol_java', 'repo_legacy', 'java', 'method', 'Legacy.start', '()',
+                  'Legacy.java', 1, 1, 'fingerprint'
+                );
+                "#,
+            )
+            .expect("legacy schema is created");
+        drop(connection);
+
+        let mut database = Database::open(&path).expect("symbol language schema migrates");
+        assert_eq!(
+            database
+                .symbol_by_id("repo_legacy", "symbol_java")
+                .expect("legacy symbol query succeeds")
+                .expect("legacy symbol remains")
+                .language,
+            SourceLanguage::Java
+        );
+
+        let file = analyze_file(
+            SourceLanguage::TypeScript,
+            "src/start.ts",
+            "export function start(): void {}",
+        )
+        .expect("typescript source analyzes");
+        let analysis = RepositoryAnalysis {
+            source_file_count: 1,
+            edges: resolve_calls(&file.symbols, &file.calls),
+            symbols: file.symbols,
+            diagnostics: file.diagnostics,
+        };
+        database
+            .replace_analysis("repo_legacy", "def456", &analysis)
+            .expect("typescript analysis persists after migration");
+        let stored_language: String = database
+            .connection
+            .query_row(
+                "SELECT language FROM symbols WHERE repository_id = 'repo_legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("typescript symbol is stored");
+        assert_eq!(stored_language, "typescript");
+
+        drop(database);
         let _ = fs::remove_file(path);
     }
 

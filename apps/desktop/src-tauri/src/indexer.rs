@@ -134,6 +134,16 @@ mod tests {
         )
         .expect("python fixture");
         fs::write(
+            repository.join("service.ts"),
+            "export function load(): void { finish(); }\nfunction finish(): void {}\n",
+        )
+        .expect("typescript fixture");
+        fs::write(
+            repository.join("Widget.tsx"),
+            "export function Widget() { return <div />; }\n",
+        )
+        .expect("tsx fixture");
+        fs::write(
             repository.join("ignored.py"),
             "def should_not_appear():\n    return None\n",
         )
@@ -143,7 +153,7 @@ mod tests {
         let analysis = analyze_repository(repository.to_str().expect("UTF-8 repository path"))
             .expect("repository analysis");
 
-        assert_eq!(analysis.source_file_count, 2);
+        assert_eq!(analysis.source_file_count, 4);
         assert!(analysis
             .symbols
             .iter()
@@ -156,6 +166,14 @@ mod tests {
             .symbols
             .iter()
             .any(|symbol| symbol.fqn == "helper.helper"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "service.load"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "Widget.Widget"));
 
         fs::remove_dir_all(repository).expect("temporary repository cleanup");
     }

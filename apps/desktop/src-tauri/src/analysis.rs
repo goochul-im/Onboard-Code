@@ -8,6 +8,7 @@ use tree_sitter::{Language, Node, Parser};
 pub enum SourceLanguage {
     Java,
     Python,
+    TypeScript,
 }
 
 impl SourceLanguage {
@@ -16,6 +17,12 @@ impl SourceLanguage {
             Some(Self::Java)
         } else if path.ends_with(".py") {
             Some(Self::Python)
+        } else if path.ends_with(".ts")
+            || path.ends_with(".tsx")
+            || path.ends_with(".mts")
+            || path.ends_with(".cts")
+        {
+            Some(Self::TypeScript)
         } else {
             None
         }
@@ -25,6 +32,7 @@ impl SourceLanguage {
         match self {
             Self::Java => "java",
             Self::Python => "python",
+            Self::TypeScript => "typescript",
         }
     }
 }
@@ -98,6 +106,10 @@ pub fn analyze_file(
     let grammar: Language = match language {
         SourceLanguage::Java => tree_sitter_java::LANGUAGE.into(),
         SourceLanguage::Python => tree_sitter_python::LANGUAGE.into(),
+        SourceLanguage::TypeScript if relative_path.ends_with(".tsx") => {
+            tree_sitter_typescript::LANGUAGE_TSX.into()
+        }
+        SourceLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     };
     parser
         .set_language(&grammar)
@@ -131,6 +143,14 @@ pub fn analyze_file(
             source,
             relative_path,
             &python_module_name(relative_path),
+            &mut Vec::new(),
+            &mut analysis,
+        ),
+        SourceLanguage::TypeScript => collect_typescript_declarations(
+            root,
+            source,
+            relative_path,
+            &typescript_module_name(relative_path),
             &mut Vec::new(),
             &mut analysis,
         ),
@@ -366,6 +386,179 @@ fn collect_python_declarations(
     }
 }
 
+fn collect_typescript_declarations(
+    node: Node<'_>,
+    source: &str,
+    relative_path: &str,
+    module_name: &str,
+    scopes: &mut Vec<String>,
+    analysis: &mut FileAnalysis,
+) {
+    match node.kind() {
+        "class_declaration" | "class" => {
+            if let Some(name) = declaration_name(node, source) {
+                scopes.push(name);
+                walk_children(node, |child| {
+                    collect_typescript_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        module_name,
+                        scopes,
+                        analysis,
+                    )
+                });
+                scopes.pop();
+            } else {
+                walk_children(node, |child| {
+                    collect_typescript_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        module_name,
+                        scopes,
+                        analysis,
+                    )
+                });
+            }
+        }
+        "function_declaration" | "generator_function_declaration" | "method_definition" => {
+            let Some(name) = declaration_name(node, source) else {
+                analysis.diagnostics.push(format!(
+                    "{relative_path}: TypeScript 함수 이름을 읽을 수 없습니다."
+                ));
+                return;
+            };
+            record_typescript_function(
+                node,
+                &name,
+                source,
+                relative_path,
+                module_name,
+                scopes,
+                analysis,
+            );
+
+            scopes.push(name);
+            if let Some(body) = node.child_by_field_name("body") {
+                walk_children(body, |child| {
+                    collect_typescript_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        module_name,
+                        scopes,
+                        analysis,
+                    )
+                });
+            }
+            scopes.pop();
+        }
+        "variable_declarator" | "public_field_definition" => {
+            let value = node.child_by_field_name("value");
+            let is_function = value.is_some_and(|value| {
+                matches!(value.kind(), "arrow_function" | "function_expression")
+            });
+            if is_function {
+                if let Some(name) = declaration_name(node, source) {
+                    record_typescript_function(
+                        node,
+                        &name,
+                        source,
+                        relative_path,
+                        module_name,
+                        scopes,
+                        analysis,
+                    );
+                    scopes.push(name);
+                    if let Some(body) = value.and_then(|value| value.child_by_field_name("body")) {
+                        walk_children(body, |child| {
+                            collect_typescript_declarations(
+                                child,
+                                source,
+                                relative_path,
+                                module_name,
+                                scopes,
+                                analysis,
+                            )
+                        });
+                    }
+                    scopes.pop();
+                }
+            } else {
+                walk_children(node, |child| {
+                    collect_typescript_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        module_name,
+                        scopes,
+                        analysis,
+                    )
+                });
+            }
+        }
+        _ => walk_children(node, |child| {
+            collect_typescript_declarations(
+                child,
+                source,
+                relative_path,
+                module_name,
+                scopes,
+                analysis,
+            )
+        }),
+    }
+}
+
+fn record_typescript_function(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    relative_path: &str,
+    module_name: &str,
+    scopes: &[String],
+    analysis: &mut FileAnalysis,
+) {
+    let function_node = node
+        .child_by_field_name("value")
+        .filter(|value| matches!(value.kind(), "arrow_function" | "function_expression"))
+        .unwrap_or(node);
+    let signature = function_node
+        .child_by_field_name("parameters")
+        .map(|parameters| normalize_signature(node_text(parameters, source)))
+        .or_else(|| {
+            function_node
+                .child_by_field_name("parameter")
+                .map(|parameter| format!("({})", normalize_signature(node_text(parameter, source))))
+        })
+        .unwrap_or_else(|| "()".into());
+    let fqn = qualified_name(module_name, scopes, name);
+    let symbol = build_symbol(
+        SourceLanguage::TypeScript,
+        if node.kind() == "method_definition" || node.kind() == "public_field_definition" {
+            "method"
+        } else {
+            "function"
+        },
+        fqn,
+        signature,
+        relative_path,
+        node,
+        source,
+    );
+    collect_typescript_calls(
+        function_node
+            .child_by_field_name("body")
+            .unwrap_or(function_node),
+        source,
+        &symbol,
+        &mut analysis.calls,
+        true,
+    );
+    analysis.symbols.push(symbol);
+}
+
 fn collect_java_calls(
     node: Node<'_>,
     source: &str,
@@ -434,6 +627,53 @@ fn collect_python_calls(
     });
 }
 
+fn collect_typescript_calls(
+    node: Node<'_>,
+    source: &str,
+    caller: &IndexedSymbol,
+    calls: &mut Vec<RawCall>,
+    is_root: bool,
+) {
+    let separately_indexed_function =
+        matches!(
+            node.kind(),
+            "function_declaration" | "generator_function_declaration" | "method_definition"
+        ) || matches!(node.kind(), "function_expression" | "arrow_function")
+            && node.parent().is_some_and(|parent| {
+                matches!(
+                    parent.kind(),
+                    "variable_declarator" | "public_field_definition"
+                )
+            });
+    if !is_root && separately_indexed_function {
+        return;
+    }
+
+    if node.kind() == "call_expression" {
+        if let Some(target_node) = node.child_by_field_name("function") {
+            let display_target = node_text(target_node, source).trim().to_owned();
+            let target_name = display_target
+                .rsplit(['.', '?'])
+                .find(|part| !part.is_empty())
+                .unwrap_or(&display_target)
+                .to_owned();
+            calls.push(RawCall {
+                caller_symbol_id: caller.id.clone(),
+                caller_fqn: caller.fqn.clone(),
+                language: SourceLanguage::TypeScript,
+                is_qualified: target_node.kind() != "identifier",
+                target_name,
+                display_target,
+                source_line: node.start_position().row as u32 + 1,
+            });
+        }
+    }
+
+    walk_children(node, |child| {
+        collect_typescript_calls(child, source, caller, calls, false)
+    });
+}
+
 fn find_java_package(root: Node<'_>, source: &str) -> String {
     let mut package = String::new();
     walk_children(root, |node| {
@@ -493,6 +733,20 @@ fn python_module_name(relative_path: &str) -> String {
     without_initializer.replace(['/', '\\'], ".")
 }
 
+fn typescript_module_name(relative_path: &str) -> String {
+    let without_extension = relative_path
+        .strip_suffix(".tsx")
+        .or_else(|| relative_path.strip_suffix(".mts"))
+        .or_else(|| relative_path.strip_suffix(".cts"))
+        .or_else(|| relative_path.strip_suffix(".ts"))
+        .unwrap_or(relative_path);
+    let without_index = without_extension
+        .strip_suffix("/index")
+        .or_else(|| without_extension.strip_suffix("\\index"))
+        .unwrap_or(without_extension);
+    without_index.replace(['/', '\\'], ".")
+}
+
 fn qualified_name(root: &str, scopes: &[String], name: &str) -> String {
     std::iter::once(root)
         .chain(scopes.iter().map(String::as_str))
@@ -511,7 +765,11 @@ fn simple_name(fqn: &str) -> &str {
 }
 
 fn is_self_reference(target: &str) -> bool {
-    target.starts_with("self.") || target.starts_with("cls.")
+    target.starts_with("self.")
+        || target.starts_with("cls.")
+        || target.starts_with("this.")
+        || target.starts_with("this?.")
+        || target.starts_with("super.")
 }
 
 fn normalize_signature(value: &str) -> String {
@@ -540,12 +798,27 @@ fn walk_children(node: Node<'_>, mut visit: impl FnMut(Node<'_>)) {
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_file, python_module_name, resolve_calls, EdgeConfidence, SourceLanguage};
+    use super::{
+        analyze_file, python_module_name, resolve_calls, typescript_module_name, EdgeConfidence,
+        SourceLanguage,
+    };
 
     #[test]
     fn omits_python_initializer_from_module_name() {
         assert_eq!(python_module_name("package/__init__.py"), "package");
         assert_eq!(python_module_name("package/module.py"), "package.module");
+    }
+
+    #[test]
+    fn normalizes_typescript_module_names() {
+        assert_eq!(
+            typescript_module_name("src/services/user.ts"),
+            "src.services.user"
+        );
+        assert_eq!(
+            typescript_module_name("src/components/index.tsx"),
+            "src.components"
+        );
     }
 
     #[test]
@@ -628,5 +901,76 @@ class Other:
         assert!(edges
             .iter()
             .any(|edge| edge.confidence == EdgeConfidence::Ambiguous));
+    }
+
+    #[test]
+    fn extracts_typescript_functions_methods_and_arrow_functions() {
+        let source = r#"
+export function bootstrap(name: string): void {
+    const prepare = (value: string) => normalize(value);
+    prepare(name);
+}
+
+function normalize(value: string): string {
+    return value.trim();
+}
+
+class UserService {
+    load(id: number): string {
+        return this.find(id);
+    }
+
+    find(id: number): string {
+        return String(id);
+    }
+}
+        "#;
+        let analysis =
+            analyze_file(SourceLanguage::TypeScript, "src/user-service.ts", source).unwrap();
+        let edges = resolve_calls(&analysis.symbols, &analysis.calls);
+
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "src.user-service.bootstrap"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "src.user-service.bootstrap.prepare"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "src.user-service.UserService.load"));
+        assert!(edges.iter().any(|edge| {
+            edge.confidence == EdgeConfidence::Resolved
+                && analysis.symbols.iter().any(|symbol| {
+                    edge.callee_symbol_id.as_deref() == Some(symbol.id.as_str())
+                        && symbol.fqn == "src.user-service.UserService.find"
+                })
+        }));
+    }
+
+    #[test]
+    fn parses_tsx_with_the_tsx_grammar() {
+        let source = r#"
+export function Greeting({ name }: { name: string }) {
+    return <section onClick={() => track(name)}>Hello {name}</section>;
+}
+
+function track(name: string): void {
+    console.log(name);
+}
+        "#;
+        let analysis = analyze_file(SourceLanguage::TypeScript, "Greeting.tsx", source).unwrap();
+        let edges = resolve_calls(&analysis.symbols, &analysis.calls);
+
+        assert!(analysis.diagnostics.is_empty());
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "Greeting.Greeting"));
+        assert!(edges
+            .iter()
+            .any(|edge| edge.confidence == EdgeConfidence::Resolved));
     }
 }

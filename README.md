@@ -1,6 +1,6 @@
 # 코드 그래프 노트
 
-로컬 Git 저장소의 Java·Python 함수 호출 관계를 탐색하고, 개발자가 함수별 노트를 직접 작성하는 macOS·Windows 데스크톱 앱입니다.
+로컬 Git 저장소의 Java·Python·TypeScript 함수 호출 관계를 탐색하고, 개발자가 함수별 노트를 직접 작성하는 macOS·Windows 데스크톱 앱입니다.
 
 ## 로컬 전용 원칙
 
@@ -11,7 +11,7 @@
 ## 사용 방법
 
 1. 앱에서 **저장소 열기**를 누르고, 컴퓨터에 이미 있는 Git 저장소 폴더를 선택합니다.
-2. **Java·Python 분석**을 실행합니다. `.gitignore`가 적용된 `.java`와 `.py`만 읽습니다.
+2. **Java·Python·TypeScript 분석**을 실행합니다. `.gitignore`가 적용된 `.java`, `.py`, `.ts`, `.tsx`, `.mts`, `.cts` 파일만 읽습니다.
 3. 왼쪽에서 함수를 검색하고, 중앙 그래프에서 caller/callee를 1~3단계로 펼칩니다.
 4. 오른쪽에서 코드 위치를 확인하고 노트와 태그를 직접 저장합니다.
 

@@ -34,8 +34,29 @@ const PYTHON_TYPES = new Set([
   "bool", "bytes", "dict", "float", "int", "list", "object", "set", "str", "tuple", "type",
 ]);
 
+const TYPESCRIPT_KEYWORDS = new Set([
+  "abstract", "any", "as", "asserts", "async", "await", "break", "case", "catch", "class", "const", "constructor",
+  "continue", "debugger", "declare", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally",
+  "for", "from", "function", "get", "if", "implements", "import", "in", "infer", "instanceof", "interface", "keyof", "let",
+  "namespace", "never", "new", "null", "of", "private", "protected", "public", "readonly", "return", "satisfies", "set",
+  "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "unknown", "using", "var",
+  "void", "while", "with", "yield",
+]);
+
+const TYPESCRIPT_TYPES = new Set([
+  "Array", "bigint", "boolean", "Date", "Error", "Map", "number", "Object", "Promise", "Record", "Set", "string", "symbol",
+]);
+
 export function detectSourceLanguage(relativePath: string): SourceLanguage {
-  return relativePath.endsWith(".py") ? "python" : "java";
+  if (relativePath.endsWith(".py")) {
+    return "python";
+  }
+  return relativePath.endsWith(".ts")
+    || relativePath.endsWith(".tsx")
+    || relativePath.endsWith(".mts")
+    || relativePath.endsWith(".cts")
+    ? "typescript"
+    : "java";
 }
 
 export function tokenizeSource(source: string, language: SourceLanguage): SyntaxToken[][] {
@@ -73,11 +94,11 @@ function tokenizeLine(line: string, language: SourceLanguage, state: HighlightSt
     }
 
     const remaining = line.slice(index);
-    if (language === "java" && remaining.startsWith("//")) {
+    if (language !== "python" && remaining.startsWith("//")) {
       pushToken(tokens, remaining, "comment");
       return tokens;
     }
-    if (language === "java" && remaining.startsWith("/*")) {
+    if (language !== "python" && remaining.startsWith("/*")) {
       const end = line.indexOf("*/", index + 2);
       if (end < 0) {
         pushToken(tokens, remaining, "comment");
@@ -96,7 +117,10 @@ function tokenizeLine(line: string, language: SourceLanguage, state: HighlightSt
     const pythonPrefix = language === "python"
       ? /^[rRuUbBfF]{0,2}(?:'''|\"\"\"|'|\")/.exec(remaining)
       : null;
-    const quote = pythonPrefix?.[0]?.at(-1) ?? (remaining.startsWith("\"") || remaining.startsWith("'") ? remaining[0] : null);
+    const quote = pythonPrefix?.[0]?.at(-1)
+      ?? (remaining.startsWith("\"") || remaining.startsWith("'") || (language === "typescript" && remaining.startsWith("`"))
+        ? remaining[0]
+        : null);
     if (quote) {
       const prefixLength = pythonPrefix?.[0].length ?? 0;
       const isTripleQuote = remaining.slice(Math.max(0, prefixLength - 3), prefixLength) === quote.repeat(3)
@@ -161,8 +185,8 @@ function findStringEnd(line: string, index: number, delimiter: string): number {
 }
 
 function classifyWord(word: string, line: string, index: number, language: SourceLanguage): SyntaxTokenKind {
-  const keywords = language === "java" ? JAVA_KEYWORDS : PYTHON_KEYWORDS;
-  const types = language === "java" ? JAVA_TYPES : PYTHON_TYPES;
+  const keywords = language === "java" ? JAVA_KEYWORDS : language === "python" ? PYTHON_KEYWORDS : TYPESCRIPT_KEYWORDS;
+  const types = language === "java" ? JAVA_TYPES : language === "python" ? PYTHON_TYPES : TYPESCRIPT_TYPES;
   if (keywords.has(word)) {
     return "keyword";
   }

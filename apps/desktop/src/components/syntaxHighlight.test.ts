@@ -41,6 +41,26 @@ describe("syntax highlighting", () => {
   it("derives the supported language from the source file extension", () => {
     expect(detectSourceLanguage("src/main/python/service.py")).toBe("python");
     expect(detectSourceLanguage("src/main/java/App.java")).toBe("java");
+    expect(detectSourceLanguage("src/services/user.ts")).toBe("typescript");
+    expect(detectSourceLanguage("src/components/UserCard.tsx")).toBe("typescript");
+    expect(detectSourceLanguage("src/server/bootstrap.mts")).toBe("typescript");
+    expect(detectSourceLanguage("src/server/config.cts")).toBe("typescript");
+  });
+
+  it("classifies TypeScript declarations, types, templates, and comments", () => {
+    const lines = tokenizeSource(
+      "export interface User { name: string }\nconst greet = (user: User): string => `Hi ${user.name}`; // greeting\n/* note */",
+      "typescript",
+    );
+
+    expect(token(lines[0], "export")?.kind).toBe("keyword");
+    expect(token(lines[0], "interface")?.kind).toBe("keyword");
+    expect(token(lines[0], "User")?.kind).toBe("type");
+    expect(token(lines[0], "string")?.kind).toBe("type");
+    expect(token(lines[1], "const")?.kind).toBe("keyword");
+    expect(token(lines[1], "`Hi ${user.name}`")?.kind).toBe("string");
+    expect(token(lines[1], "// greeting")?.kind).toBe("comment");
+    expect(token(lines[2], "/* note */")?.kind).toBe("comment");
   });
 });
 

@@ -83,6 +83,13 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol, viewport, o
           },
         },
         {
+          selector: "node[language = 'typescript']",
+          style: {
+            "background-color": "#254963",
+            "border-color": "#5fc3e7",
+          },
+        },
+        {
           selector: "node.selected",
           style: {
             "border-color": "#f5c979",

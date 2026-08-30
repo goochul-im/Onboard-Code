@@ -81,7 +81,14 @@ pub fn source_files(repository_root: &Path) -> Result<Vec<PathBuf>, String> {
         .split(|byte| *byte == b'\0')
         .filter(|entry| !entry.is_empty())
         .filter_map(|entry| std::str::from_utf8(entry).ok())
-        .filter(|path| path.ends_with(".java") || path.ends_with(".py"))
+        .filter(|path| {
+            path.ends_with(".java")
+                || path.ends_with(".py")
+                || path.ends_with(".ts")
+                || path.ends_with(".tsx")
+                || path.ends_with(".mts")
+                || path.ends_with(".cts")
+        })
         .map(PathBuf::from)
         .collect())
 }
