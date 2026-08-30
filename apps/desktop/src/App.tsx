@@ -5,6 +5,7 @@ import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SymbolSearchResult } from "./components/SymbolSearchResult";
+import { resolveSourceScrollTop } from "./components/sourceScroll";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
 import {
   parseWorkspaceState,
@@ -60,6 +61,7 @@ function App() {
   const [notice, setNotice] = useState("로컬 Git 저장소를 열어 분석을 시작하세요.");
   const selectedCodeLine = useRef<HTMLElement | null>(null);
   const sourcePreview = useRef<HTMLPreElement | null>(null);
+  const shouldCenterSource = useRef(true);
   const markdownEditor = useRef<MarkdownEditorHandle>(null);
   const sourceDragStart = useRef<number | null>(null);
   const sourceDragEnd = useRef<number | null>(null);
@@ -182,6 +184,7 @@ function App() {
         setDepth(restored.depth);
         setLineReferenceRange(restored.lineReferenceRange);
         setGraphViewport(restored.graphViewport);
+        shouldCenterSource.current = false;
         setSourceScrollTop(restored.sourceScrollTop);
         setMarkdownSelection(restored.markdownSelection);
         setMarkdownScrollTop(restored.markdownScrollTop);
@@ -302,6 +305,8 @@ function App() {
         setSelectedSymbol(symbol);
         setGraph(nextGraph);
         setSourceFile(nextSource);
+        shouldCenterSource.current = true;
+        setSourceScrollTop(0);
         const nextDrafts = nextNotes.map(toNoteDraft);
         setNotes(nextDrafts);
         setSelectedNoteId(nextDrafts[0]?.id ?? null);
@@ -341,10 +346,28 @@ function App() {
 
   useEffect(() => {
     if (activeWorkspace === "record" && sourceFile) {
-      if (sourcePreview.current && sourceScrollTop > 0) sourcePreview.current.scrollTop = sourceScrollTop;
-      else selectedCodeLine.current?.scrollIntoView({ block: "center" });
+      const frame = requestAnimationFrame(() => {
+        const preview = sourcePreview.current;
+        const selectedLine = selectedCodeLine.current;
+        if (!preview || !selectedLine) return;
+        const previewBox = preview.getBoundingClientRect();
+        const selectedLineBox = selectedLine.getBoundingClientRect();
+        const nextScrollTop = resolveSourceScrollTop({
+          shouldCenter: shouldCenterSource.current,
+          savedScrollTop: sourceScrollTop,
+          selectedLineTop: selectedLineBox.top - previewBox.top + preview.scrollTop,
+          selectedLineHeight: selectedLineBox.height,
+          viewportHeight: preview.clientHeight,
+          scrollHeight: preview.scrollHeight,
+        });
+        shouldCenterSource.current = false;
+        preview.scrollTop = nextScrollTop;
+        setSourceScrollTop(nextScrollTop);
+      });
+      return () => cancelAnimationFrame(frame);
     }
-  }, [activeWorkspace, sourceFile, sourceScrollTop]);
+    return undefined;
+  }, [activeWorkspace, sourceFile]);
 
   const rememberGraphViewport = useCallback((viewport: GraphViewport) => setGraphViewport(viewport), []);
   const rememberMarkdownState = useCallback((selection: { start: number; end: number }, scrollTop: number) => {
@@ -740,7 +763,10 @@ function App() {
                     onPointerMove={updateSourceLineSelection}
                     onPointerUp={finishSourceLineSelection}
                     onPointerCancel={cancelSourceLineSelection}
-                    onScroll={(event) => setSourceScrollTop(event.currentTarget.scrollTop)}
+                    onScroll={(event) => {
+                      shouldCenterSource.current = false;
+                      setSourceScrollTop(event.currentTarget.scrollTop);
+                    }}
                   >
                     {syntaxLines.map((tokens, index) => {
                       const lineNumber = index + 1;
