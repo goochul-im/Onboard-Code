@@ -34,6 +34,17 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .primary-button, .secondary-button { border: 1px solid transparent; border-radius: 8px; padding: .64rem .8rem; font-weight: 700; }
 .primary-button { width: 100%; margin-top: 1rem; color: #102034; background: #9bc0ff; }
 .primary-button:hover:not(:disabled) { background: #b1cdff; }
+.analysis-action { position: relative; margin-top: 1rem; }
+.analysis-action > .primary-button { margin-top: 0; padding-inline: 2.8rem; }
+.analysis-help { position: absolute; z-index: 4; top: .42rem; right: .55rem; }
+.analysis-help-trigger { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid rgb(16 32 52 / 42%); border-radius: 999px; padding: 0; color: #102034; background: rgb(255 255 255 / 32%); font-size: .72rem; font-weight: 800; }
+.analysis-help-trigger:hover, .analysis-help-trigger:focus-visible { border-color: #102034; background: rgb(255 255 255 / 55%); outline: none; }
+.analysis-help-tooltip { position: absolute; top: calc(100% + .65rem); right: -.15rem; width: 268px; visibility: hidden; border: 1px solid #40516d; border-radius: 8px; padding: .75rem; color: #dce6f5; background: #0d121b; box-shadow: 0 12px 28px rgb(0 0 0 / 45%); opacity: 0; transform: translateY(-4px); transition: opacity 120ms ease, transform 120ms ease, visibility 120ms; }
+.analysis-help:hover .analysis-help-tooltip, .analysis-help:focus-within .analysis-help-tooltip { visibility: visible; opacity: 1; transform: translateY(0); }
+.analysis-help-tooltip section > strong { color: #f2f6fc; font-size: .74rem; }
+.analysis-help-tooltip ul { display: grid; gap: .42rem; margin: .6rem 0 0; padding: 0; list-style: none; }
+.analysis-help-tooltip li { display: flex; align-items: baseline; justify-content: space-between; gap: .65rem; font-size: .71rem; }
+.analysis-help-tooltip code { color: #9fb2cc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .64rem; text-align: right; }
 .primary-button.small, .secondary-button.small { width: auto; margin: 0; padding: .45rem .65rem; font-size: .75rem; }
 .secondary-button { color: #d8e5f8; border-color: #53637d; background: transparent; }
 .secondary-button:hover:not(:disabled) { border-color: #91b8ff; background: #202c3e; }

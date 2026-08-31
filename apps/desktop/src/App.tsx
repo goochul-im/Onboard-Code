@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
+import { AnalysisHelp } from "./components/AnalysisHelp";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
 import { SymbolSearchResult } from "./components/SymbolSearchResult";
@@ -655,9 +656,12 @@ function App() {
               <span>{repository.isDirty ? "변경 사항 있음" : "작업 트리 깨끗함"}</span>
             </div>
           )}
-          <button className="primary-button" onClick={() => void runAnalysis()} disabled={!repositoryId || busy}>
-            {busy ? "처리 중…" : "Java·PHP·Python·TypeScript 분석"}
-          </button>
+          <div className="analysis-action">
+            <button className="primary-button" onClick={() => void runAnalysis()} disabled={!repositoryId || busy}>
+              {busy ? "처리 중…" : "코드 분석"}
+            </button>
+            <AnalysisHelp />
+          </div>
           {analysis && <p className="analysis-summary">{analysis.edgeCount}개 호출 관계 · {analysis.status}</p>}
 
           <label className="field-label" htmlFor="symbol-search">함수 찾기</label>
