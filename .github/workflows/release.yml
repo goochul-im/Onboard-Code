@@ -26,7 +26,7 @@ jobs:
           - label: Windows x64
             os: windows-latest
             targets: x86_64-pc-windows-msvc
-            args: ""
+            args: --bundles nsis
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,5 +65,4 @@ jobs:
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
-          retryAttempts: 2
           args: ${{ matrix.args }}

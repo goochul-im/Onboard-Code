@@ -41,7 +41,7 @@ Run the first command immediately before saving `TAURI_SIGNING_PRIVATE_KEY`, the
 3. Push the release commit.
 4. In GitHub Actions, run **Release desktop app**.
 
-The workflow builds a universal macOS bundle and a Windows x64 installer, signs updater artifacts, creates `app-v{version}`, publishes the GitHub Release, and uploads `latest.json` for installed apps.
+The workflow builds a universal macOS bundle and a Windows x64 NSIS `-setup.exe` installer, signs updater artifacts, creates `app-v{version}`, publishes the GitHub Release, and uploads `latest.json` for installed apps. Windows intentionally does not build MSI: WiX requires the optional VBScript feature and is not needed for this app's user-level installation.
 
 ## Installed app behavior
 
