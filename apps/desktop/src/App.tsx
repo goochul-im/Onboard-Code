@@ -656,7 +656,7 @@ function App() {
             </div>
           )}
           <button className="primary-button" onClick={() => void runAnalysis()} disabled={!repositoryId || busy}>
-            {busy ? "처리 중…" : "Java·Python·TypeScript 분석"}
+            {busy ? "처리 중…" : "Java·PHP·Python·TypeScript 분석"}
           </button>
           {analysis && <p className="analysis-summary">{analysis.edgeCount}개 호출 관계 · {analysis.status}</p>}
 

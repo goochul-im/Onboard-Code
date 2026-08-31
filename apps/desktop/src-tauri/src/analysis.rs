@@ -7,6 +7,7 @@ use tree_sitter::{Language, Node, Parser};
 #[serde(rename_all = "lowercase")]
 pub enum SourceLanguage {
     Java,
+    Php,
     Python,
     TypeScript,
 }
@@ -15,6 +16,8 @@ impl SourceLanguage {
     pub fn from_relative_path(path: &str) -> Option<Self> {
         if path.ends_with(".java") {
             Some(Self::Java)
+        } else if path.ends_with(".php") {
+            Some(Self::Php)
         } else if path.ends_with(".py") {
             Some(Self::Python)
         } else if path.ends_with(".ts")
@@ -31,6 +34,7 @@ impl SourceLanguage {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Java => "java",
+            Self::Php => "php",
             Self::Python => "python",
             Self::TypeScript => "typescript",
         }
@@ -120,6 +124,7 @@ pub fn analyze_file(
     let mut parser = Parser::new();
     let grammar: Language = match language {
         SourceLanguage::Java => tree_sitter_java::LANGUAGE.into(),
+        SourceLanguage::Php => tree_sitter_php::LANGUAGE_PHP.into(),
         SourceLanguage::Python => tree_sitter_python::LANGUAGE.into(),
         SourceLanguage::TypeScript if relative_path.ends_with(".tsx") => {
             tree_sitter_typescript::LANGUAGE_TSX.into()
@@ -153,6 +158,14 @@ pub fn analyze_file(
                 &mut analysis,
             );
         }
+        SourceLanguage::Php => collect_php_declarations(
+            root,
+            source,
+            relative_path,
+            &php_namespace_or_module(root, source, relative_path),
+            &mut Vec::new(),
+            &mut analysis,
+        ),
         SourceLanguage::Python => collect_python_declarations(
             root,
             source,
@@ -216,33 +229,76 @@ pub fn resolve_calls(symbols: &[IndexedSymbol], calls: &[RawCall]) -> Vec<Indexe
                         .iter()
                         .filter(|symbol| {
                             symbol.language == call.language
-                                && simple_name(&symbol.fqn) == call.target_name
+                                && symbol_name_matches(
+                                    &call.language,
+                                    simple_name(&symbol.fqn),
+                                    &call.target_name,
+                                )
                                 && parent_scope(&symbol.fqn) == scope
                         })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let same_file = caller
-                .and_then(|caller| {
-                    by_file_and_name
-                        .get(&(
-                            &call.language,
-                            caller.relative_path.as_str(),
-                            call.target_name.as_str(),
-                        ))
-                        .cloned()
-                })
-                .unwrap_or_default();
-            let global = by_name
-                .get(&(&call.language, call.target_name.as_str()))
-                .cloned()
-                .unwrap_or_default();
+            let same_file = if call.language == SourceLanguage::Php {
+                caller
+                    .map(|caller| {
+                        symbols
+                            .iter()
+                            .filter(|symbol| {
+                                symbol.language == call.language
+                                    && symbol.relative_path == caller.relative_path
+                                    && symbol_name_matches(
+                                        &call.language,
+                                        simple_name(&symbol.fqn),
+                                        &call.target_name,
+                                    )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                caller
+                    .and_then(|caller| {
+                        by_file_and_name
+                            .get(&(
+                                &call.language,
+                                caller.relative_path.as_str(),
+                                call.target_name.as_str(),
+                            ))
+                            .cloned()
+                    })
+                    .unwrap_or_default()
+            };
+            let global = if call.language == SourceLanguage::Php {
+                symbols
+                    .iter()
+                    .filter(|symbol| {
+                        symbol.language == call.language
+                            && symbol_name_matches(
+                                &call.language,
+                                simple_name(&symbol.fqn),
+                                &call.target_name,
+                            )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                by_name
+                    .get(&(&call.language, call.target_name.as_str()))
+                    .cloned()
+                    .unwrap_or_default()
+            };
 
             let typed_receiver_candidates = call.receiver_type.as_deref().map(|receiver_type| {
                 let by_type = global
                     .iter()
                     .copied()
-                    .filter(|symbol| symbol_owner_name(&symbol.fqn) == receiver_type)
+                    .filter(|symbol| {
+                        symbol_name_matches(
+                            &call.language,
+                            symbol_owner_name(&symbol.fqn),
+                            receiver_type,
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let by_import = call
                     .receiver_module
@@ -369,6 +425,82 @@ fn collect_java_declarations(
         }
         _ => walk_children(node, |child| {
             collect_java_declarations(child, source, relative_path, package_name, scopes, analysis)
+        }),
+    }
+}
+
+fn collect_php_declarations(
+    node: Node<'_>,
+    source: &str,
+    relative_path: &str,
+    namespace: &str,
+    scopes: &mut Vec<String>,
+    analysis: &mut FileAnalysis,
+) {
+    match node.kind() {
+        "class_declaration"
+        | "interface_declaration"
+        | "trait_declaration"
+        | "enum_declaration" => {
+            if let Some(name) = declaration_name(node, source) {
+                scopes.push(name);
+                walk_children(node, |child| {
+                    collect_php_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        namespace,
+                        scopes,
+                        analysis,
+                    )
+                });
+                scopes.pop();
+            }
+        }
+        "function_definition" | "method_declaration" => {
+            let Some(name) = declaration_name(node, source) else {
+                analysis.diagnostics.push(format!(
+                    "{relative_path}: PHP 함수 이름을 읽을 수 없습니다."
+                ));
+                return;
+            };
+            let signature = declaration_signature(node, source, "parameters");
+            let fqn = qualified_name(namespace, scopes, &name);
+            let symbol = build_symbol(
+                SourceLanguage::Php,
+                if node.kind() == "method_declaration" {
+                    "method"
+                } else {
+                    "function"
+                },
+                fqn,
+                signature,
+                relative_path,
+                node,
+                source,
+            );
+            if let Some(body) = node.child_by_field_name("body") {
+                collect_php_calls(body, source, &symbol, &mut analysis.calls, true);
+            }
+            analysis.symbols.push(symbol);
+
+            scopes.push(name);
+            if let Some(body) = node.child_by_field_name("body") {
+                walk_children(body, |child| {
+                    collect_php_declarations(
+                        child,
+                        source,
+                        relative_path,
+                        namespace,
+                        scopes,
+                        analysis,
+                    )
+                });
+            }
+            scopes.pop();
+        }
+        _ => walk_children(node, |child| {
+            collect_php_declarations(child, source, relative_path, namespace, scopes, analysis)
         }),
     }
 }
@@ -832,6 +964,89 @@ fn collect_java_calls(
     });
 }
 
+fn collect_php_calls(
+    node: Node<'_>,
+    source: &str,
+    caller: &IndexedSymbol,
+    calls: &mut Vec<RawCall>,
+    is_root: bool,
+) {
+    if !is_root
+        && matches!(
+            node.kind(),
+            "function_definition"
+                | "method_declaration"
+                | "anonymous_function_creation_expression"
+                | "arrow_function"
+        )
+    {
+        return;
+    }
+
+    let call_target = match node.kind() {
+        "function_call_expression" => node.child_by_field_name("function").map(|target| {
+            let display_target = node_text(target, source).trim().to_owned();
+            let target_name = php_simple_name(&display_target).to_owned();
+            (target_name, display_target, target.kind() != "name", None)
+        }),
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            node.child_by_field_name("name").map(|name| {
+                let target_name = node_text(name, source).trim().to_owned();
+                let object = node
+                    .child_by_field_name("object")
+                    .map(|object| node_text(object, source).trim())
+                    .unwrap_or_default();
+                (
+                    target_name.clone(),
+                    format!("{object}->{target_name}"),
+                    true,
+                    None,
+                )
+            })
+        }
+        "scoped_call_expression" => node.child_by_field_name("name").map(|name| {
+            let target_name = node_text(name, source).trim().to_owned();
+            let scope = node
+                .child_by_field_name("scope")
+                .map(|scope| node_text(scope, source).trim())
+                .unwrap_or_default();
+            let receiver_type = if matches!(
+                scope.to_ascii_lowercase().as_str(),
+                "self" | "static" | "parent"
+            ) {
+                None
+            } else {
+                Some(php_simple_name(scope).to_owned())
+            };
+            (
+                target_name.clone(),
+                format!("{scope}::{target_name}"),
+                true,
+                receiver_type,
+            )
+        }),
+        _ => None,
+    };
+
+    if let Some((target_name, display_target, is_qualified, receiver_type)) = call_target {
+        calls.push(RawCall {
+            caller_symbol_id: caller.id.clone(),
+            caller_fqn: caller.fqn.clone(),
+            language: SourceLanguage::Php,
+            target_name,
+            display_target,
+            is_qualified,
+            receiver_type,
+            receiver_module: None,
+            source_line: node.start_position().row as u32 + 1,
+        });
+    }
+
+    walk_children(node, |child| {
+        collect_php_calls(child, source, caller, calls, false)
+    });
+}
+
 fn collect_python_calls(
     node: Node<'_>,
     source: &str,
@@ -935,6 +1150,33 @@ fn find_java_package(root: Node<'_>, source: &str) -> String {
     package
 }
 
+fn php_namespace_or_module(root: Node<'_>, source: &str, relative_path: &str) -> String {
+    let mut namespace = None;
+    walk_children(root, |node| {
+        if namespace.is_none() && node.kind() == "namespace_definition" {
+            namespace = node
+                .child_by_field_name("name")
+                .map(|name| node_text(name, source).replace('\\', "."));
+        }
+    });
+    namespace.unwrap_or_else(|| php_module_name(relative_path))
+}
+
+fn php_module_name(relative_path: &str) -> String {
+    relative_path
+        .strip_suffix(".php")
+        .unwrap_or(relative_path)
+        .replace(['/', '\\'], ".")
+}
+
+fn php_simple_name(value: &str) -> &str {
+    value
+        .trim_start_matches('\\')
+        .rsplit('\\')
+        .next()
+        .unwrap_or(value)
+}
+
 fn declaration_name(node: Node<'_>, source: &str) -> Option<String> {
     node.child_by_field_name("name")
         .map(|name| node_text(name, source).to_owned())
@@ -1015,6 +1257,14 @@ fn symbol_owner_name(fqn: &str) -> &str {
     simple_name(parent_scope(fqn))
 }
 
+fn symbol_name_matches(language: &SourceLanguage, symbol_name: &str, target_name: &str) -> bool {
+    if *language == SourceLanguage::Php {
+        symbol_name.eq_ignore_ascii_case(target_name)
+    } else {
+        symbol_name == target_name
+    }
+}
+
 fn typescript_import_matches(
     caller_path: &str,
     candidate_path: &str,
@@ -1059,6 +1309,10 @@ fn is_self_reference(target: &str) -> bool {
         || target.starts_with("this.")
         || target.starts_with("this?.")
         || target.starts_with("super.")
+        || target.starts_with("$this->")
+        || target.starts_with("self::")
+        || target.starts_with("static::")
+        || target.starts_with("parent::")
 }
 
 fn normalize_signature(value: &str) -> String {
@@ -1169,6 +1423,54 @@ def helper():
         assert!(edges
             .iter()
             .any(|edge| edge.confidence == EdgeConfidence::Resolved));
+    }
+
+    #[test]
+    fn extracts_and_resolves_php_functions_and_methods() {
+        let source = r#"<?php
+namespace App\Service;
+
+class OrderService {
+    public function execute(int $id): void {
+        $this->validate($id);
+        Helper::notify();
+    }
+
+    private function validate(int $id): void {}
+}
+
+class Helper {
+    public static function notify(): void {}
+}
+
+function boot(): void {
+    HELPER_FN();
+}
+
+function helper_fn(): void {}
+"#;
+        let analysis = analyze_file(SourceLanguage::Php, "src/OrderService.php", source).unwrap();
+        let edges = resolve_calls(&analysis.symbols, &analysis.calls);
+
+        assert!(analysis.diagnostics.is_empty());
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "App.Service.OrderService.execute"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "App.Service.helper_fn"));
+        assert_eq!(analysis.calls.len(), 3);
+        assert!(edges
+            .iter()
+            .all(|edge| edge.confidence == EdgeConfidence::Resolved));
+        assert!(edges.iter().any(|edge| {
+            analysis.symbols.iter().any(|symbol| {
+                edge.callee_symbol_id.as_deref() == Some(symbol.id.as_str())
+                    && symbol.fqn == "App.Service.Helper.notify"
+            })
+        }));
     }
 
     #[test]

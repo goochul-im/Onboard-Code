@@ -103,6 +103,13 @@ export function CallGraph({
           },
         },
         {
+          selector: "node[language = 'php']",
+          style: {
+            "background-color": "#3d3b63",
+            "border-color": "#aaa6df",
+          },
+        },
+        {
           selector: "node[language = 'typescript']",
           style: {
             "background-color": "#254963",

@@ -20,5 +20,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tree-sitter = "0.25"
 tree-sitter-java = "0.23"
+tree-sitter-php = "0.24.2"
 tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23.2"

@@ -1,6 +1,6 @@
 # 코드 그래프 노트
 
-로컬 Git 저장소의 Java·Python·TypeScript 함수 호출 관계를 탐색하고, 개발자가 함수별 노트를 직접 작성하는 macOS·Windows 데스크톱 앱입니다.
+로컬 Git 저장소의 Java·PHP·Python·TypeScript 함수 호출 관계를 탐색하고, 개발자가 함수별 노트를 직접 작성하는 macOS·Windows 데스크톱 앱입니다.
 
 ## 로컬 전용 원칙
 
@@ -11,11 +11,11 @@
 ## 사용 방법
 
 1. 앱에서 **저장소 열기**를 누르고, 컴퓨터에 이미 있는 Git 저장소 폴더를 선택합니다.
-2. **Java·Python·TypeScript 분석**을 실행합니다. `.gitignore`가 적용된 `.java`, `.py`, `.ts`, `.tsx`, `.mts`, `.cts` 파일만 읽습니다.
+2. **Java·PHP·Python·TypeScript 분석**을 실행합니다. `.gitignore`가 적용된 `.java`, `.php`, `.py`, `.ts`, `.tsx`, `.mts`, `.cts` 파일만 읽습니다.
 3. 왼쪽에서 함수를 검색하고, 중앙 그래프에서 caller/callee를 1~3단계로 펼칩니다.
 4. 오른쪽에서 코드 위치를 확인하고 노트와 태그를 직접 저장합니다.
 
-정적으로 확정할 수 없는 호출은 그래프의 확정 연결로 보이지 않으며, `후보가 여러 개` 또는 `대상을 찾지 못함`으로 표시합니다. TypeScript에서는 명시적으로 타입이 선언된 생성자 주입 프로퍼티와 상대 import를 따라 호출 대상을 좁힙니다. reflection, 런타임 provider token, 동적 import, monkey patching은 현재 정확도 범위 밖입니다.
+정적으로 확정할 수 없는 호출은 그래프의 확정 연결로 보이지 않으며, `후보가 여러 개` 또는 `대상을 찾지 못함`으로 표시합니다. TypeScript에서는 명시적으로 타입이 선언된 생성자 주입 프로퍼티와 상대 import를 따라 호출 대상을 좁힙니다. PHP에서는 네임스페이스와 `$this->method()`, `Class::method()` 호출을 해석합니다. reflection, 런타임 provider token, 동적 import, monkey patching은 현재 정확도 범위 밖입니다.
 
 ## 개발 시작
 

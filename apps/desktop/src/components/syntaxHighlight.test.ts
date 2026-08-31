@@ -41,6 +41,7 @@ describe("syntax highlighting", () => {
   it("derives the supported language from the source file extension", () => {
     expect(detectSourceLanguage("src/main/python/service.py")).toBe("python");
     expect(detectSourceLanguage("src/main/java/App.java")).toBe("java");
+    expect(detectSourceLanguage("src/PaymentService.php")).toBe("php");
     expect(detectSourceLanguage("src/services/user.ts")).toBe("typescript");
     expect(detectSourceLanguage("src/components/UserCard.tsx")).toBe("typescript");
     expect(detectSourceLanguage("src/server/bootstrap.mts")).toBe("typescript");
@@ -61,6 +62,22 @@ describe("syntax highlighting", () => {
     expect(token(lines[1], "`Hi ${user.name}`")?.kind).toBe("string");
     expect(token(lines[1], "// greeting")?.kind).toBe("comment");
     expect(token(lines[2], "/* note */")?.kind).toBe("comment");
+  });
+
+  it("classifies PHP declarations, types, strings, and hash comments", () => {
+    const lines = tokenizeSource(
+      "<?php\nfinal class PaymentService {\n  public function charge(int $amount): void { echo \"ok\"; } # charged\n}",
+      "php",
+    );
+
+    expect(token(lines[0], "php")?.kind).toBe("keyword");
+    expect(token(lines[1], "final")?.kind).toBe("keyword");
+    expect(token(lines[1], "PaymentService")?.kind).toBe("type");
+    expect(token(lines[2], "function")?.kind).toBe("keyword");
+    expect(token(lines[2], "charge")?.kind).toBe("function");
+    expect(token(lines[2], "int")?.kind).toBe("type");
+    expect(token(lines[2], "\"ok\"")?.kind).toBe("string");
+    expect(token(lines[2], "# charged")?.kind).toBe("comment");
   });
 });
 

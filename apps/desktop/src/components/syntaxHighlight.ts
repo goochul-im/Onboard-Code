@@ -34,6 +34,20 @@ const PYTHON_TYPES = new Set([
   "bool", "bytes", "dict", "float", "int", "list", "object", "set", "str", "tuple", "type",
 ]);
 
+const PHP_KEYWORDS = new Set([
+  "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone", "const", "continue",
+  "declare", "default", "do", "echo", "else", "elseif", "empty", "enddeclare", "endfor", "endforeach", "endif",
+  "endswitch", "endwhile", "enum", "eval", "exit", "extends", "false", "final", "finally", "fn", "for", "foreach",
+  "function", "global", "goto", "if", "implements", "include", "include_once", "instanceof", "insteadof", "interface",
+  "isset", "list", "match", "namespace", "new", "null", "or", "php", "print", "private", "protected", "public",
+  "readonly", "require", "require_once", "return", "static", "switch", "throw", "trait", "true", "try", "unset",
+  "use", "var", "while", "xor", "yield",
+]);
+
+const PHP_TYPES = new Set([
+  "bool", "float", "int", "iterable", "mixed", "never", "object", "self", "string", "void",
+]);
+
 const TYPESCRIPT_KEYWORDS = new Set([
   "abstract", "any", "as", "asserts", "async", "await", "break", "case", "catch", "class", "const", "constructor",
   "continue", "debugger", "declare", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally",
@@ -50,6 +64,9 @@ const TYPESCRIPT_TYPES = new Set([
 export function detectSourceLanguage(relativePath: string): SourceLanguage {
   if (relativePath.endsWith(".py")) {
     return "python";
+  }
+  if (relativePath.endsWith(".php")) {
+    return "php";
   }
   return relativePath.endsWith(".ts")
     || relativePath.endsWith(".tsx")
@@ -110,6 +127,10 @@ function tokenizeLine(line: string, language: SourceLanguage, state: HighlightSt
       continue;
     }
     if (language === "python" && remaining.startsWith("#")) {
+      pushToken(tokens, remaining, "comment");
+      return tokens;
+    }
+    if (language === "php" && remaining.startsWith("#") && !remaining.startsWith("#[")) {
       pushToken(tokens, remaining, "comment");
       return tokens;
     }
@@ -185,8 +206,20 @@ function findStringEnd(line: string, index: number, delimiter: string): number {
 }
 
 function classifyWord(word: string, line: string, index: number, language: SourceLanguage): SyntaxTokenKind {
-  const keywords = language === "java" ? JAVA_KEYWORDS : language === "python" ? PYTHON_KEYWORDS : TYPESCRIPT_KEYWORDS;
-  const types = language === "java" ? JAVA_TYPES : language === "python" ? PYTHON_TYPES : TYPESCRIPT_TYPES;
+  const keywords = language === "java"
+    ? JAVA_KEYWORDS
+    : language === "php"
+      ? PHP_KEYWORDS
+      : language === "python"
+        ? PYTHON_KEYWORDS
+        : TYPESCRIPT_KEYWORDS;
+  const types = language === "java"
+    ? JAVA_TYPES
+    : language === "php"
+      ? PHP_TYPES
+      : language === "python"
+        ? PYTHON_TYPES
+        : TYPESCRIPT_TYPES;
   if (keywords.has(word)) {
     return "keyword";
   }

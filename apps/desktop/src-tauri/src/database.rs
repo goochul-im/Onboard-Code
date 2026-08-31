@@ -149,7 +149,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS symbols (
               id TEXT PRIMARY KEY NOT NULL,
               repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-              language TEXT NOT NULL CHECK (language IN ('java', 'python', 'typescript')),
+              language TEXT NOT NULL CHECK (language IN ('java', 'php', 'python', 'typescript')),
               kind TEXT NOT NULL,
               fqn TEXT NOT NULL,
               signature TEXT NOT NULL,
@@ -988,6 +988,7 @@ fn row_to_repository(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryReco
 fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSymbol> {
     let language = match row.get::<_, String>(1)?.as_str() {
         "java" => crate::analysis::SourceLanguage::Java,
+        "php" => crate::analysis::SourceLanguage::Php,
         "python" => crate::analysis::SourceLanguage::Python,
         "typescript" => crate::analysis::SourceLanguage::TypeScript,
         _ => return Err(rusqlite::Error::InvalidQuery),
@@ -1040,7 +1041,8 @@ fn ensure_symbols_language_schema(connection: &mut Connection) -> rusqlite::Resu
         [],
         |row| row.get(0),
     )?;
-    if table_sql.to_lowercase().contains("'typescript'") {
+    let normalized_sql = table_sql.to_lowercase();
+    if normalized_sql.contains("'typescript'") && normalized_sql.contains("'php'") {
         return Ok(());
     }
 
@@ -1052,7 +1054,7 @@ fn ensure_symbols_language_schema(connection: &mut Connection) -> rusqlite::Resu
             CREATE TABLE symbols_v2 (
               id TEXT PRIMARY KEY NOT NULL,
               repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-              language TEXT NOT NULL CHECK (language IN ('java', 'python', 'typescript')),
+              language TEXT NOT NULL CHECK (language IN ('java', 'php', 'python', 'typescript')),
               kind TEXT NOT NULL,
               fqn TEXT NOT NULL,
               signature TEXT NOT NULL,
@@ -1481,8 +1483,8 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_symbol_language_constraint_for_typescript() {
-        let path = temporary_database_path("legacy-symbol-language-migration");
+    fn migrates_pre_php_symbol_language_constraint() {
+        let path = temporary_database_path("pre-php-symbol-language-migration");
         let connection = Connection::open(&path).expect("legacy database opens");
         connection
             .execute_batch(
@@ -1501,7 +1503,7 @@ mod tests {
                 CREATE TABLE symbols (
                   id TEXT PRIMARY KEY NOT NULL,
                   repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-                  language TEXT NOT NULL CHECK (language IN ('java', 'python')),
+                  language TEXT NOT NULL CHECK (language IN ('java', 'python', 'typescript')),
                   kind TEXT NOT NULL,
                   fqn TEXT NOT NULL,
                   signature TEXT NOT NULL,
@@ -1536,11 +1538,11 @@ mod tests {
         );
 
         let file = analyze_file(
-            SourceLanguage::TypeScript,
-            "src/start.ts",
-            "export function start(): void {}",
+            SourceLanguage::Php,
+            "src/start.php",
+            "<?php function start(): void {}",
         )
-        .expect("typescript source analyzes");
+        .expect("PHP source analyzes");
         let analysis = RepositoryAnalysis {
             source_file_count: 1,
             edges: resolve_calls(&file.symbols, &file.calls),
@@ -1549,7 +1551,7 @@ mod tests {
         };
         database
             .replace_analysis("repo_legacy", "def456", &analysis)
-            .expect("typescript analysis persists after migration");
+            .expect("PHP analysis persists after migration");
         let stored_language: String = database
             .connection
             .query_row(
@@ -1557,8 +1559,8 @@ mod tests {
                 [],
                 |row| row.get(0),
             )
-            .expect("typescript symbol is stored");
-        assert_eq!(stored_language, "typescript");
+            .expect("PHP symbol is stored");
+        assert_eq!(stored_language, "php");
 
         drop(database);
         let _ = fs::remove_file(path);

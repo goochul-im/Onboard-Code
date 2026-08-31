@@ -134,6 +134,11 @@ mod tests {
         )
         .expect("python fixture");
         fs::write(
+            repository.join("Payment.php"),
+            "<?php class Payment { public function charge(): void {} }\n",
+        )
+        .expect("PHP fixture");
+        fs::write(
             repository.join("service.ts"),
             "export function load(): void { finish(); }\nfunction finish(): void {}\n",
         )
@@ -153,7 +158,7 @@ mod tests {
         let analysis = analyze_repository(repository.to_str().expect("UTF-8 repository path"))
             .expect("repository analysis");
 
-        assert_eq!(analysis.source_file_count, 4);
+        assert_eq!(analysis.source_file_count, 5);
         assert!(analysis
             .symbols
             .iter()
@@ -166,6 +171,10 @@ mod tests {
             .symbols
             .iter()
             .any(|symbol| symbol.fqn == "helper.helper"));
+        assert!(analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.fqn == "Payment.Payment.charge"));
         assert!(analysis
             .symbols
             .iter()

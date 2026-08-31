@@ -83,6 +83,7 @@ pub fn source_files(repository_root: &Path) -> Result<Vec<PathBuf>, String> {
         .filter_map(|entry| std::str::from_utf8(entry).ok())
         .filter(|path| {
             path.ends_with(".java")
+                || path.ends_with(".php")
                 || path.ends_with(".py")
                 || path.ends_with(".ts")
                 || path.ends_with(".tsx")
