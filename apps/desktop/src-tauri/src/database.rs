@@ -1190,7 +1190,11 @@ fn ensure_notes_schema(connection: &mut Connection) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
+    use std::{
+        env, fs,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::{
         analysis::{analyze_file, resolve_calls, SourceLanguage},
@@ -1199,12 +1203,45 @@ mod tests {
 
     use super::*;
 
+    static NEXT_TEMP_DATABASE_ID: AtomicU64 = AtomicU64::new(0);
+
     fn temporary_database_path(test_name: &str) -> std::path::PathBuf {
+        let safe_test_name = test_name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let sequence = NEXT_TEMP_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
         env::temp_dir().join(format!(
-            "code-graph-notebook-{test_name}-{}-{}.sqlite3",
+            "code-graph-notebook-{safe_test_name}-{}-{timestamp}-{sequence}.sqlite3",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    #[test]
+    fn temporary_database_paths_are_windows_safe_and_unique() {
+        let first = temporary_database_path("database::tests\\windows?fixture*");
+        let second = temporary_database_path("database::tests\\windows?fixture*");
+        let filename = first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("UTF-8 temporary filename");
+
+        assert_ne!(first, second);
+        assert!(!filename.chars().any(|character| matches!(
+            character,
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+        )));
+        assert!(filename.ends_with(".sqlite3"));
     }
 
     fn registered_database(test_name: &str) -> (std::path::PathBuf, Database) {
