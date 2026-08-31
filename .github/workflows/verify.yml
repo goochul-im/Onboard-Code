@@ -26,3 +26,5 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run tauri -- build --debug
+        env:
+          TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false}}'

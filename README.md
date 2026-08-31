@@ -6,6 +6,7 @@
 
 - 선택한 저장소는 읽기 전용으로 분석합니다.
 - 코드, 노트, 분석 결과와 경로를 외부로 전송하지 않습니다.
+- 업데이트 확인 시 앱 버전과 운영체제·아키텍처 정보만 GitHub Release 엔드포인트로 전송합니다.
 - 노트와 분석 인덱스는 운영체제의 앱 데이터 디렉터리에 있는 SQLite DB에만 저장합니다.
 
 ## 사용 방법
@@ -33,7 +34,9 @@ npm run check
 npm run tauri -- build --debug
 ```
 
-Tauri 번들은 각 운영체제에서 생성합니다. macOS에서는 `.app`과 DMG를, Windows에서는 설치 프로그램을 해당 OS에서 빌드하세요. 코드 서명과 배포 자동 업데이트는 아직 구성하지 않았습니다.
+Tauri 번들은 각 운영체제에서 생성합니다. macOS에서는 `.app`과 DMG를, Windows에서는 설치 프로그램을 해당 OS에서 빌드합니다. 업데이트 서명은 구성되어 있으며 Apple·Microsoft 배포 인증서를 이용한 운영체제 코드 서명은 별도 설정이 필요합니다.
+
+GitHub Actions의 **Release desktop app**을 실행하면 macOS·Windows 설치 파일과 서명된 업데이트 메타데이터를 GitHub Release에 게시합니다. 최초 설치 이후에는 앱 상단의 업데이트 버튼으로 새 버전을 받을 수 있습니다. 서명 키 설정과 배포 순서는 [릴리스 가이드](docs/releasing.md)를 참고하세요.
 
 ## 데이터 보존
 

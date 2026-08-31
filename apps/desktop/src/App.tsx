@@ -7,6 +7,7 @@ import { AnalysisHelp } from "./components/AnalysisHelp";
 import { GroupedSymbolList } from "./components/GroupedSymbolList";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
+import { UpdateControl } from "./components/UpdateControl";
 import { resolveSourceScrollTop } from "./components/sourceScroll";
 import { isLineReferenceGesture, lineReferenceModifierForUserAgent } from "./components/sourceLineGesture";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
@@ -661,6 +662,7 @@ function App() {
           <h1>코드 그래프 노트</h1>
         </div>
         <div className="topbar-actions">
+          <UpdateControl />
           <button className="secondary-button" onClick={() => void chooseRepository()} disabled={busy}>
             저장소 열기
           </button>

@@ -333,6 +333,8 @@ fn database_path(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let database = Database::open(&database_path(app)?)?;
             app.manage(AppState::new(database));

@@ -48,6 +48,7 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .primary-button.small, .secondary-button.small { width: auto; margin: 0; padding: .45rem .65rem; font-size: .75rem; }
 .secondary-button { color: #d8e5f8; border-color: #53637d; background: transparent; }
 .secondary-button:hover:not(:disabled) { border-color: #91b8ff; background: #202c3e; }
+.update-button { white-space: nowrap; }
 .analysis-summary, .muted { color: #96a5ba; font-size: .75rem; line-height: 1.5; }
 .grouped-symbols { margin-top: .65rem; }
 .symbol-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 28px; color: #8fa0b7; font-size: .66rem; }
