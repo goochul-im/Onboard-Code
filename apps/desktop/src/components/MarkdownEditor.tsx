@@ -4,8 +4,10 @@ import {
   useEffect,
   useRef,
   useState,
+  type MouseEvent,
   type ReactNode,
 } from "react";
+import { findLineReferenceAt, parseLineReference } from "./lineReference";
 import { replaceMarkdownRange } from "./markdownBlocks";
 
 interface DocumentOption {
@@ -28,6 +30,7 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void;
   onTagsChange: (value: string) => void;
   onSave: () => void;
+  onLineReferenceClick: (start: number, end: number) => void;
   initialSelection: { start: number; end: number } | null;
   initialScrollTop: number;
   onEditorStateChange: (selection: { start: number; end: number }, scrollTop: number) => void;
@@ -54,6 +57,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   onChange,
   onTagsChange,
   onSave,
+  onLineReferenceClick,
   initialSelection,
   initialScrollTop,
   onEditorStateChange,
@@ -121,6 +125,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const lineStart = valueRef.current.lastIndexOf("\n", selectionStart - 1) + 1;
     updateValue(replaceMarkdownRange(valueRef.current, lineStart, lineStart, prefix));
     focusAt(selectionStart + prefix.length);
+  };
+
+  const handleEditorClick = (event: MouseEvent<HTMLTextAreaElement>) => {
+    rememberSelection();
+    const reference = findLineReferenceAt(valueRef.current, event.currentTarget.selectionStart);
+    if (reference) {
+      onLineReferenceClick(reference.start, reference.end);
+    }
   };
 
   useImperativeHandle(ref, () => ({
@@ -219,7 +231,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           }}
           onSelect={rememberSelection}
           onKeyUp={rememberSelection}
-          onClick={rememberSelection}
+          onClick={handleEditorClick}
           onBlur={rememberSelection}
           onScroll={rememberSelection}
           placeholder={disabled ? "새 분석 문서를 만든 뒤 내용을 작성하세요." : "## 이 함수의 역할"}
@@ -228,7 +240,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           readOnly={isSaving}
         />
       ) : (
-        <MarkdownPreview value={value} />
+        <MarkdownPreview value={value} onLineReferenceClick={onLineReferenceClick} />
       )}
 
       <label className="field-label" htmlFor="note-tags">태그</label>
@@ -243,7 +255,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   );
 });
 
-function MarkdownPreview({ value }: { value: string }) {
+function MarkdownPreview({
+  value,
+  onLineReferenceClick,
+}: {
+  value: string;
+  onLineReferenceClick: (start: number, end: number) => void;
+}) {
   if (!value.trim()) {
     return <div className="markdown-preview empty">아직 작성한 설명이 없습니다.</div>;
   }
@@ -272,7 +290,7 @@ function MarkdownPreview({ value }: { value: string }) {
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
-      const content = renderInline(heading[2]);
+      const content = renderInline(heading[2], onLineReferenceClick);
       blocks.push(level === 1
         ? <h3 key={`heading-${index}`}>{content}</h3>
         : level === 2
@@ -287,11 +305,11 @@ function MarkdownPreview({ value }: { value: string }) {
         items.push(lines[index].slice(2));
         index += 1;
       }
-      blocks.push(<ul key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</ul>);
+      blocks.push(<ul key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, onLineReferenceClick)}</li>)}</ul>);
       continue;
     }
     if (line.startsWith("> ")) {
-      blocks.push(<blockquote key={`quote-${index}`}>{renderInline(line.slice(2))}</blockquote>);
+      blocks.push(<blockquote key={`quote-${index}`}>{renderInline(line.slice(2), onLineReferenceClick)}</blockquote>);
       index += 1;
       continue;
     }
@@ -301,15 +319,35 @@ function MarkdownPreview({ value }: { value: string }) {
       paragraph.push(lines[index]);
       index += 1;
     }
-    blocks.push(<p key={`paragraph-${index}`}>{renderInline(paragraph.join(" "))}</p>);
+    blocks.push(<p key={`paragraph-${index}`}>{renderInline(paragraph.join(" "), onLineReferenceClick)}</p>);
   }
 
   return <div className="markdown-preview">{blocks}</div>;
 }
 
-function renderInline(text: string): ReactNode[] {
-  const fragments = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+function renderInline(
+  text: string,
+  onLineReferenceClick: (start: number, end: number) => void,
+): ReactNode[] {
+  const fragments = text.split(/(\[line:\d+(?:-\d+)?\]|\*\*[^*]+\*\*|`[^`]+`)/g);
   return fragments.filter(Boolean).map((fragment, index) => {
+    const lineReference = parseLineReference(fragment);
+    if (lineReference) {
+      const label = lineReference.start === lineReference.end
+        ? `${lineReference.start}행 코드로 이동`
+        : `${lineReference.start}행부터 ${lineReference.end}행 코드로 이동`;
+      return (
+        <button
+          className="markdown-line-reference"
+          type="button"
+          aria-label={label}
+          onClick={() => onLineReferenceClick(lineReference.start, lineReference.end)}
+          key={index}
+        >
+          {fragment}
+        </button>
+      );
+    }
     if (fragment.startsWith("**") && fragment.endsWith("**")) {
       return <strong key={index}>{fragment.slice(2, -2)}</strong>;
     }

@@ -157,6 +157,9 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .markdown-preview ul { margin: .5rem 0; padding-left: 1.2rem; }
 .markdown-preview blockquote { margin: .75rem 0; border-left: 3px solid #7ea8ef; padding-left: .7rem; color: #b5c3d7; }
 .markdown-preview code { border-radius: 4px; padding: .1rem .28rem; color: #bce8df; background: #20312f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8em; }
+.markdown-line-reference { display: inline; border: 0; border-radius: 4px; padding: .1rem .28rem; color: #bce8df; background: #20312f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8em; line-height: inherit; vertical-align: baseline; }
+.markdown-line-reference:hover { color: #e9fff9; background: #2b514a; text-decoration: underline; }
+.markdown-line-reference:focus-visible { outline: 2px solid #79d4c0; outline-offset: 2px; }
 .markdown-code { overflow: auto; margin: .75rem 0; border-radius: 6px; padding: .65rem; background: #0b1018; }
 .markdown-code code { padding: 0; color: #cad7eb; background: transparent; }
 

@@ -551,6 +551,36 @@ function App() {
     end: Math.max(start, end),
   });
 
+  const navigateToLineReference = (start: number, end: number) => {
+    const range = normalizedLineRange(start, end);
+    setLineReferenceRange(range);
+    requestAnimationFrame(() => {
+      const preview = sourcePreview.current;
+      const targetLine = preview?.querySelector<HTMLElement>(`code[data-line-number="${range.start}"]`);
+      if (!preview || !targetLine) {
+        setNotice(`[line:${range.start}] 위치를 현재 소스에서 찾지 못했습니다.`);
+        return;
+      }
+      const previewBox = preview.getBoundingClientRect();
+      const targetBox = targetLine.getBoundingClientRect();
+      const nextScrollTop = resolveSourceScrollTop({
+        shouldCenter: true,
+        savedScrollTop: preview.scrollTop,
+        selectedLineTop: targetBox.top - previewBox.top + preview.scrollTop,
+        selectedLineHeight: targetBox.height,
+        viewportHeight: preview.clientHeight,
+        scrollHeight: preview.scrollHeight,
+      });
+      shouldCenterSource.current = false;
+      preview.scrollTop = nextScrollTop;
+      setSourceScrollTop(nextScrollTop);
+      const reference = range.start === range.end
+        ? `[line:${range.start}]`
+        : `[line:${range.start}-${range.end}]`;
+      setNotice(`${reference} 소스 위치로 이동했습니다.`);
+    });
+  };
+
   const startSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
     if (!isLineReferenceGesture(event)) {
       return;
@@ -834,6 +864,7 @@ function App() {
                 onChange={(bodyMarkdown) => updateSelectedNote((note) => ({ ...note, bodyMarkdown }))}
                 onTagsChange={(tagsInput) => updateSelectedNote((note) => ({ ...note, tagsInput }))}
                 onSave={() => void saveNote()}
+                onLineReferenceClick={navigateToLineReference}
                 initialSelection={markdownSelection}
                 initialScrollTop={markdownScrollTop}
                 onEditorStateChange={rememberMarkdownState}
