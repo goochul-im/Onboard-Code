@@ -115,9 +115,10 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .source-heading > span { color: #9db0cb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; white-space: nowrap; }
 .source-selection-guide { margin: .65rem 0 -.2rem; color: #94a5bc; font-size: .74rem; line-height: 1.45; }
 .source-selection-guide code { border-radius: 4px; padding: .08rem .22rem; color: #bce8df; background: #20312f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.source-selection-guide kbd { border: 1px solid #53637d; border-radius: 4px; padding: .06rem .24rem; color: #dce7f7; background: #202938; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; }
 .code-preview { margin: .9rem 0 0; overflow: auto; border: 0; border-radius: 0; background: #0d121b; color: #c8d3e5; font-size: .78rem; line-height: 1.62; }
 .code-preview.full-source { flex: 1; min-height: 500px; max-height: calc(100vh - 270px); }
-.selectable-source { cursor: crosshair; user-select: none; touch-action: none; }
+.selectable-source { cursor: text; user-select: text; touch-action: auto; }
 .code-line { display: block; min-width: max-content; min-height: 1.62em; padding: 0 .75rem; white-space: pre; }
 .code-line > .line-number { display: inline-block; width: 3.7rem; margin-right: .75rem; color: #62718a; user-select: none; }
 .syntax-token.token-annotation { color: #61afef; }

@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
@@ -8,6 +8,7 @@ import { GroupedSymbolList } from "./components/GroupedSymbolList";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
 import { resolveSourceScrollTop } from "./components/sourceScroll";
+import { isLineReferenceGesture } from "./components/sourceLineGesture";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
 import {
   parseWorkspaceState,
@@ -547,6 +548,9 @@ function App() {
   });
 
   const startSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
+    if (!isLineReferenceGesture(event)) {
+      return;
+    }
     const lineNumber = lineNumberAtPointer(event);
     if (!lineNumber) {
       return;
@@ -560,8 +564,12 @@ function App() {
 
   const updateSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
     const start = sourceDragStart.current;
+    if (!start) {
+      return;
+    }
+    event.preventDefault();
     const lineNumber = lineNumberAtPointer(event);
-    if (!start || !lineNumber) {
+    if (!lineNumber) {
       return;
     }
     sourceDragEnd.current = lineNumber;
@@ -570,6 +578,10 @@ function App() {
 
   const finishSourceLineSelection = (event: PointerEvent<HTMLPreElement>) => {
     const start = sourceDragStart.current;
+    if (!start) {
+      return;
+    }
+    event.preventDefault();
     const end = lineNumberAtPointer(event) ?? sourceDragEnd.current;
     sourceDragStart.current = null;
     sourceDragEnd.current = null;
@@ -600,6 +612,12 @@ function App() {
   const cancelSourceLineSelection = () => {
     sourceDragStart.current = null;
     sourceDragEnd.current = null;
+  };
+
+  const suppressControlClickMenu = (event: MouseEvent<HTMLPreElement>) => {
+    if (event.ctrlKey) {
+      event.preventDefault();
+    }
   };
 
   return (
@@ -754,16 +772,17 @@ function App() {
                   </div>
                   {sourceFile && <span>{sourceFile.startLine}–{sourceFile.endLine}행</span>}
                 </div>
-                <p className="source-selection-guide">줄을 클릭하면 <code>[line:31]</code>, 여러 줄을 드래그하면 <code>[line:31-35]</code> 참조를 노트 커서 위치에 넣습니다.</p>
+                <p className="source-selection-guide">일반 드래그로 코드를 선택·복사합니다. <kbd>Ctrl</kbd>+클릭은 <code>[line:31]</code>, <kbd>Ctrl</kbd>+드래그는 <code>[line:31-35]</code> 참조를 노트에 넣습니다.</p>
                 {sourceFile ? (
                   <pre
                     ref={sourcePreview}
                     className="code-preview full-source selectable-source"
-                    aria-label="소스 코드. 한 줄을 클릭하거나 여러 줄을 드래그해 노트에 줄 참조를 추가할 수 있습니다."
+                    aria-label="소스 코드. 일반 드래그로 복사할 코드를 선택하고, Control을 누른 채 클릭하거나 드래그해 노트에 줄 참조를 추가할 수 있습니다."
                     onPointerDown={startSourceLineSelection}
                     onPointerMove={updateSourceLineSelection}
                     onPointerUp={finishSourceLineSelection}
                     onPointerCancel={cancelSourceLineSelection}
+                    onContextMenu={suppressControlClickMenu}
                     onScroll={(event) => {
                       shouldCenterSource.current = false;
                       setSourceScrollTop(event.currentTarget.scrollTop);
