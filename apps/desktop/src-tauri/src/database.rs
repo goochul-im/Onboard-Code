@@ -395,7 +395,6 @@ impl Database {
                 FROM symbols
                 WHERE repository_id = ?1
                 ORDER BY fqn COLLATE NOCASE
-                LIMIT 80
                 "#,
             )?;
             return statement
@@ -1397,6 +1396,41 @@ mod tests {
         assert_eq!(repository.head, "def456");
         assert!(repository.is_dirty);
         assert_eq!(database.list_repositories().unwrap().len(), 1);
+
+        drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lists_every_symbol_when_browsing_without_a_search_query() {
+        let (path, database) = registered_database("unbounded-symbol-browse");
+        for index in 0..81 {
+            database
+                .connection
+                .execute(
+                    r#"
+                    INSERT INTO symbols (
+                      id, repository_id, language, kind, fqn, signature, relative_path,
+                      start_line, end_line, ast_fingerprint
+                    ) VALUES (?1, 'repo_workspace', 'java', 'method', ?2, '()', ?3, 1, 2, ?4)
+                    "#,
+                    params![
+                        format!("symbol_{index}"),
+                        format!("example.Class{index}.method"),
+                        format!("src/Class{index}.java"),
+                        format!("fingerprint_{index}"),
+                    ],
+                )
+                .expect("symbol inserts");
+        }
+
+        assert_eq!(
+            database
+                .search_symbols("repo_workspace", "")
+                .expect("all symbols load")
+                .len(),
+            81,
+        );
 
         drop(database);
         let _ = fs::remove_file(path);

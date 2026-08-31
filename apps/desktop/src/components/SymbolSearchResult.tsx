@@ -5,15 +5,16 @@ interface SymbolSearchResultProps {
   symbol: SymbolRecord;
   selected: boolean;
   disabled: boolean;
+  compact?: boolean;
   onSelect: (symbolId: string) => void;
 }
 
-export function SymbolSearchResult({ symbol, selected, disabled, onSelect }: SymbolSearchResultProps) {
+export function SymbolSearchResult({ symbol, selected, disabled, compact = false, onSelect }: SymbolSearchResultProps) {
   const presentation = presentSymbol(symbol.fqn);
   return (
     <button
       type="button"
-      className={`symbol-row ${selected ? "active" : ""}`}
+      className={`symbol-row${compact ? " compact" : ""}${selected ? " active" : ""}`}
       onClick={() => onSelect(symbol.id)}
       disabled={disabled}
     >
@@ -22,12 +23,16 @@ export function SymbolSearchResult({ symbol, selected, disabled, onSelect }: Sym
         <strong className="symbol-method" title={`${symbol.fqn}${symbol.signature}`}>
           {presentation.methodName}
         </strong>
-        <span className="symbol-class" title={presentation.className}>
-          {presentation.className}
-        </span>
-        <small className="symbol-location" title={symbol.relativePath}>
-          {symbol.relativePath}
-        </small>
+        {!compact && (
+          <>
+            <span className="symbol-class" title={presentation.className}>
+              {presentation.className}
+            </span>
+            <small className="symbol-location" title={symbol.relativePath}>
+              {symbol.relativePath}
+            </small>
+          </>
+        )}
       </span>
     </button>
   );

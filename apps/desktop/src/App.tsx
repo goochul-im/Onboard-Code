@@ -4,9 +4,9 @@ import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { AnalysisHelp } from "./components/AnalysisHelp";
+import { GroupedSymbolList } from "./components/GroupedSymbolList";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
-import { SymbolSearchResult } from "./components/SymbolSearchResult";
 import { resolveSourceScrollTop } from "./components/sourceScroll";
 import { detectSourceLanguage, tokenizeSource } from "./components/syntaxHighlight";
 import {
@@ -672,18 +672,14 @@ function App() {
             placeholder="함수명, 클래스, 파일명"
             disabled={!repositoryId}
           />
-          <div className="symbol-list" aria-label="함수 검색 결과">
-            {symbols.map((symbol) => (
-              <SymbolSearchResult
-                symbol={symbol}
-                selected={selectedSymbol?.id === symbol.id}
-                disabled={busy}
-                onSelect={(symbolId) => void selectSymbol(symbolId)}
-                key={symbol.id}
-              />
-            ))}
-            {repositoryId && symbols.length === 0 && <p className="muted">분석 후 함수를 검색할 수 있습니다.</p>}
-          </div>
+          <GroupedSymbolList
+            symbols={symbols}
+            query={query}
+            selectedSymbolId={selectedSymbol?.id ?? null}
+            disabled={busy}
+            showEmptyMessage={Boolean(repositoryId)}
+            onSelect={(symbolId) => void selectSymbol(symbolId)}
+          />
           {orphanNotes.length > 0 && (
             <details className="orphan-notes">
               <summary>연결 필요 노트 {orphanNotes.length}개</summary>

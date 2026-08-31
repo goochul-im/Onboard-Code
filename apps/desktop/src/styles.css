@@ -49,12 +49,30 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .secondary-button { color: #d8e5f8; border-color: #53637d; background: transparent; }
 .secondary-button:hover:not(:disabled) { border-color: #91b8ff; background: #202c3e; }
 .analysis-summary, .muted { color: #96a5ba; font-size: .75rem; line-height: 1.5; }
+.grouped-symbols { margin-top: .65rem; }
+.symbol-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 28px; color: #8fa0b7; font-size: .66rem; }
+.symbol-list-toolbar > div { display: flex; gap: .25rem; }
+.symbol-list-toolbar button { border: 1px solid #3e4c63; border-radius: 5px; padding: .25rem .38rem; color: #bfcde0; background: #1a2331; font-size: .62rem; }
+.symbol-list-toolbar button:hover, .symbol-list-toolbar button:focus-visible { border-color: #8cb5ff; color: #edf4ff; outline: none; }
 .symbol-list { display: grid; gap: .22rem; max-height: calc(100vh - 390px); margin-top: .6rem; overflow: auto; scrollbar-color: #2e3b50 transparent; scrollbar-width: thin; }
 .symbol-list::-webkit-scrollbar { width: 8px; height: 8px; }
 .symbol-list::-webkit-scrollbar-track { background: transparent; }
 .symbol-list::-webkit-scrollbar-thumb { border-radius: 999px; background: #2e3b50; }
 .symbol-row { display: flex; gap: .65rem; width: 100%; min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid transparent; border-radius: 7px; padding: .65rem .6rem; color: #c6d2e4; text-align: left; background: transparent; }
 .symbol-row:hover, .symbol-row.active { border-color: #40516d; background: #202a39; }
+.symbol-row.compact { align-items: center; padding: .43rem .55rem; }
+.symbol-row.compact .language-dot { margin-top: 0; }
+.symbol-row.compact .symbol-method { font-size: .76rem; }
+.symbol-group { min-width: 0; border: 1px solid #303b4d; border-radius: 7px; background: #151c27; }
+.symbol-group[open] { border-color: #40516d; background: #182130; }
+.symbol-group summary { position: relative; padding: .55rem 2.2rem .55rem .65rem; color: #d8e2f0; cursor: pointer; }
+.symbol-group summary::marker { color: #8192aa; }
+.symbol-group-copy { display: inline-block; width: calc(100% - .5rem); min-width: 0; vertical-align: middle; }
+.symbol-group-copy strong, .symbol-group-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.symbol-group-copy strong { font-size: .75rem; }
+.symbol-group-copy small { margin-top: .12rem; color: #7f91aa; font-size: .61rem; }
+.symbol-group-count { position: absolute; top: 50%; right: .65rem; min-width: 1.25rem; border-radius: 999px; padding: .1rem .3rem; color: #9eb2cd; background: #242f40; font-size: .6rem; text-align: center; transform: translateY(-50%); }
+.symbol-group-items { display: grid; gap: .08rem; border-top: 1px solid #303b4d; padding: .22rem; }
 .symbol-copy { display: block; min-width: 0; flex: 1; }
 .symbol-method, .symbol-class, .symbol-location { display: block; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
 .symbol-method { color: #f3f6fc; font-size: .88rem; font-weight: 750; line-height: 1.3; }
