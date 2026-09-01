@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Main application window permissions",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "process:default", "updater:default"]
+  "permissions": [
+    "core:default",
+    "clipboard-manager:allow-write-html",
+    "clipboard-manager:allow-write-text",
+    "dialog:default",
+    "process:default",
+    "updater:default"
+  ]
 }

@@ -15,6 +15,7 @@
 2. **코드 분석**을 실행합니다. 버튼의 `?` 도움말에서 지원 언어를 확인할 수 있으며, `.gitignore`가 적용된 `.java`, `.php`, `.py`, `.ts`, `.tsx`, `.mts`, `.cts` 파일만 읽습니다.
 3. 왼쪽에서 클래스·파일 그룹을 펼치거나 함수를 검색하고, 중앙 그래프에서 caller/callee를 1~3단계로 펼칩니다.
 4. Record에서 코드를 일반 드래그해 복사하거나, macOS에서는 `Command`, Windows에서는 `Ctrl`을 누른 채 클릭·드래그해 줄 참조를 노트에 넣습니다. 문서의 `[line:31]` 참조를 클릭하면 해당 코드로 돌아갈 수 있습니다.
+5. **Confluence용 복사**를 누르면 줄 참조가 실제 코드 블록으로 치환된 문서를 Confluence Cloud 편집기에 붙여넣을 수 있습니다.
 
 정적으로 확정할 수 없는 호출은 그래프의 확정 연결로 보이지 않으며, `후보가 여러 개` 또는 `대상을 찾지 못함`으로 표시합니다. TypeScript에서는 명시적으로 타입이 선언된 생성자 주입 프로퍼티와 상대 import를 따라 호출 대상을 좁힙니다. PHP에서는 네임스페이스와 `$this->method()`, `Class::method()` 호출을 해석합니다. reflection, 런타임 provider token, 동적 import, monkey patching은 현재 정확도 범위 밖입니다.
 
@@ -46,3 +47,5 @@ GitHub Actions의 **Release desktop app**을 실행하면 macOS·Windows 설치 
 - 아직 로컬 DB 백업·내보내기와 수동 재연결 UI는 제공하지 않습니다.
 
 자세한 요구사항과 구현 순서는 [구현 계획](.omx/plans/local-code-graph-notebook-plan.md)을 참고하세요.
+
+Confluence Cloud 붙여넣기 형식과 데이터 경계는 [Confluence 내보내기 가이드](docs/confluence-export.md)를 참고하세요.

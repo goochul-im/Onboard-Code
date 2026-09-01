@@ -30,6 +30,7 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void;
   onTagsChange: (value: string) => void;
   onSave: () => void;
+  onCopyForConfluence: () => void;
   onLineReferenceClick: (start: number, end: number) => void;
   initialSelection: { start: number; end: number } | null;
   initialScrollTop: number;
@@ -57,6 +58,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   onChange,
   onTagsChange,
   onSave,
+  onCopyForConfluence,
   onLineReferenceClick,
   initialSelection,
   initialScrollTop,
@@ -151,9 +153,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           <p className="eyebrow">ANALYSIS DOCUMENTS</p>
           <h2>함수 분석 문서</h2>
         </div>
-        <button className="primary-button small" onClick={onSave} disabled={disabled || isSaving}>
-          {isSaving ? "저장 중…" : "저장"}
-        </button>
+        <div className="markdown-editor-actions">
+          <button
+            className="secondary-button small"
+            type="button"
+            title="줄 참조를 실제 코드 블록으로 바꿔 복사"
+            onClick={onCopyForConfluence}
+            disabled={disabled || isSaving}
+          >
+            Confluence용 복사
+          </button>
+          <button className="primary-button small" onClick={onSave} disabled={disabled || isSaving}>
+            {isSaving ? "저장 중…" : "저장"}
+          </button>
+        </div>
       </div>
 
       <div className="document-switcher">

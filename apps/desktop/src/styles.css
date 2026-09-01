@@ -112,6 +112,7 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .detail-workspace { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(360px, .9fr); flex: 1; min-height: 0; }
 .source-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 1.25rem; }
 .source-heading, .markdown-editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.markdown-editor-actions { display: flex; align-items: center; gap: .45rem; }
 .source-heading h3, .markdown-editor-header h2 { margin: .18rem 0 0; color: #eef4ff; font-size: 1rem; }
 .source-heading > span { color: #9db0cb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; white-space: nowrap; }
 .source-selection-guide { margin: .65rem 0 -.2rem; color: #94a5bc; font-size: .74rem; line-height: 1.45; }

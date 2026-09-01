@@ -1,10 +1,12 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { writeHtml, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { AnalysisHelp } from "./components/AnalysisHelp";
 import { GroupedSymbolList } from "./components/GroupedSymbolList";
+import { buildConfluenceExport } from "./components/confluenceExport";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
 import { UpdateControl } from "./components/UpdateControl";
@@ -505,6 +507,38 @@ function App() {
     }
   };
 
+  const copyNoteForConfluence = async () => {
+    if (!selectedNote || !selectedSymbol || !sourceFile) return;
+    const tags = selectedNote.tagsInput
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    const exported = buildConfluenceExport({
+      title: selectedNote.title,
+      markdown: selectedNote.bodyMarkdown,
+      tags,
+      symbolFqn: selectedSymbol.fqn,
+      signature: selectedSymbol.signature,
+      relativePath: sourceFile.relativePath,
+      source: sourceFile.source,
+      language: selectedSymbol.language,
+    });
+    try {
+      await writeHtml(exported.html, exported.text);
+      const unresolved = exported.unresolvedReferenceCount > 0
+        ? ` 찾지 못한 참조 ${exported.unresolvedReferenceCount}개가 있습니다.`
+        : "";
+      setNotice(`Confluence용 문서를 복사했습니다. 코드 블록 ${exported.resolvedReferenceCount}개.${unresolved}`);
+    } catch (htmlError) {
+      try {
+        await writeText(exported.text);
+        setNotice("HTML 복사를 지원하지 않아 일반 텍스트 형식으로 복사했습니다.");
+      } catch (textError) {
+        setNotice(`Confluence용 문서를 복사하지 못했습니다: ${String(textError || htmlError)}`);
+      }
+    }
+  };
+
   const createNote = async () => {
     if (!repositoryId || !selectedSymbol) {
       return;
@@ -866,6 +900,7 @@ function App() {
                 onChange={(bodyMarkdown) => updateSelectedNote((note) => ({ ...note, bodyMarkdown }))}
                 onTagsChange={(tagsInput) => updateSelectedNote((note) => ({ ...note, tagsInput }))}
                 onSave={() => void saveNote()}
+                onCopyForConfluence={() => void copyNoteForConfluence()}
                 onLineReferenceClick={navigateToLineReference}
                 initialSelection={markdownSelection}
                 initialScrollTop={markdownScrollTop}
