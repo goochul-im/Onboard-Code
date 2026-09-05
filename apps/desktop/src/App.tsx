@@ -5,6 +5,10 @@ import { api } from "./api";
 import { CallGraph } from "./components/CallGraph";
 import type { GraphViewport } from "./components/CallGraph";
 import { AnalysisHelp } from "./components/AnalysisHelp";
+import { ChangeImpactHelp } from "./components/ChangeImpactHelp";
+import { ChangeImpactPanel } from "./components/ChangeImpactPanel";
+import { CollectionsWorkspace } from "./components/CollectionsWorkspace";
+import { ExploreCollectionAddDialog } from "./components/ExploreCollectionAddDialog";
 import { GroupedSymbolList } from "./components/GroupedSymbolList";
 import { buildConfluenceExport } from "./components/confluenceExport";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./components/MarkdownEditor";
@@ -23,6 +27,8 @@ import {
 import { defaultWorkspace, workspaces, type Workspace } from "./workspaces";
 import type {
   AnalysisSummary,
+  ChangeImpactReport,
+  CollectionSummary,
   GraphData,
   NoteRecord,
   OrphanNote,
@@ -53,6 +59,13 @@ function App() {
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const [depth, setDepth] = useState(1);
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null);
+  const [changeImpact, setChangeImpact] = useState<ChangeImpactReport | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [exploreCollections, setExploreCollections] = useState<CollectionSummary[]>([]);
+  const [collectionAddOpen, setCollectionAddOpen] = useState(false);
+  const [collectionAddTarget, setCollectionAddTarget] = useState<number | "new" | "">("");
+  const [newCollectionTitle, setNewCollectionTitle] = useState("");
   const [orphanNotes, setOrphanNotes] = useState<OrphanNote[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(defaultWorkspace);
   const [restoredRepositoryId, setRestoredRepositoryId] = useState<string | null>(null);
@@ -123,6 +136,20 @@ function App() {
     setOrphanNotes(items);
   }, []);
 
+  const loadChangeImpact = useCallback(async (targetRepositoryId: string) => {
+    const report = await api.getChangeImpact(targetRepositoryId);
+    setChangeImpact(report);
+    setRepositories((items) => items.map((item) => item.id === targetRepositoryId
+      ? {
+          ...item,
+          branch: report.branch,
+          head: report.currentRevision,
+          isDirty: report.isDirty,
+        }
+      : item));
+    return report;
+  }, []);
+
   const persistWorkspace = useCallback(async (targetRepositoryId: string) => {
     await api.saveWorkspaceSnapshot({
       schemaVersion: workspaceSnapshotSchemaVersion,
@@ -142,10 +169,11 @@ function App() {
         sourceScrollTop,
         markdownSelection,
         markdownScrollTop,
+        selectedCollectionId,
       }),
     });
   }, [activeWorkspace, depth, graphViewport, lineReferenceRange, markdownScrollTop,
-    markdownSelection, notes, query, selectedNoteId, selectedSymbol, sourceScrollTop]);
+    markdownSelection, notes, query, selectedCollectionId, selectedNoteId, selectedSymbol, sourceScrollTop]);
 
   useEffect(() => {
     void api
@@ -161,7 +189,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const targetRepository = repositories.find((item) => item.id === repositoryId);
+    const targetRepository = repository;
     if (!repositoryId || !targetRepository) {
       setRestoredRepositoryId(null);
       return;
@@ -194,6 +222,7 @@ function App() {
         setSourceScrollTop(restored.sourceScrollTop);
         setMarkdownSelection(restored.markdownSelection);
         setMarkdownScrollTop(restored.markdownScrollTop);
+        setSelectedCollectionId(restored.selectedCollectionId);
         if (!restored.selectedSymbol) {
           setWorkspaceWritable(true);
           setRestoredRepositoryId(repositoryId);
@@ -250,7 +279,7 @@ function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [repositories, repositoryId]);
+  }, [repositoryId, repository?.rootPath]);
 
   useEffect(() => {
     if (!repositoryId || restoredRepositoryId !== repositoryId || !workspaceWritable) return;
@@ -278,6 +307,7 @@ function App() {
   useEffect(() => {
     if (!repositoryId) {
       setOrphanNotes([]);
+      setSelectedCollectionId(null);
       return;
     }
     void loadOrphanNotes(repositoryId).catch((error: unknown) =>
@@ -285,13 +315,49 @@ function App() {
     );
   }, [repositoryId, loadOrphanNotes]);
 
+  useEffect(() => {
+    if (!repositoryId || restoredRepositoryId !== repositoryId) {
+      return;
+    }
+    let cancelled = false;
+    setImpactLoading(true);
+    void loadChangeImpact(repositoryId)
+      .then((report) => {
+        if (!cancelled && report.status === "changed") {
+          setNotice(
+            `마지막 분석 이후 ${report.changedFiles.length}개 파일과 ${report.changes.length}개 함수가 변경되었습니다.`,
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setNotice(`변경 영향을 확인하지 못했습니다: ${String(error)}`);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setImpactLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [loadChangeImpact, repositoryId, restoredRepositoryId]);
+
   const selectSymbol = useCallback(
     async (symbolId: string) => {
       if (!repositoryId || busy) {
         return;
       }
       const requestSequence = ++symbolRequestSequence.current;
-      const symbol = symbols.find((item) => item.id === symbolId) ?? graph?.nodes.find((item) => item.id === symbolId);
+      let symbol = symbols.find((item) => item.id === symbolId)
+        ?? graph?.nodes.find((item) => item.id === symbolId);
+      if (!symbol) {
+        const availableSymbols = await api.searchSymbols(repositoryId, "");
+        if (requestSequence !== symbolRequestSequence.current) {
+          return;
+        }
+        setSymbols(availableSymbols);
+        symbol = availableSymbols.find((item) => item.id === symbolId);
+      }
       if (!symbol) {
         return;
       }
@@ -415,10 +481,44 @@ function App() {
       setNotes([]);
       setSelectedNoteId(null);
       setAnalysis(null);
+      setChangeImpact(null);
+      setSelectedCollectionId(null);
+      setExploreCollections([]);
+      setCollectionAddOpen(false);
+      setCollectionAddTarget("");
       setNotice(`${nextRepository.displayName}을(를) 등록했습니다. 분석을 실행하세요.`);
     } catch (error) {
       setNotice(`저장소를 등록하지 못했습니다: ${String(error)}`);
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const runChangeImpact = async () => {
+    if (!repositoryId) {
+      return;
+    }
+    setBusy(true);
+    setImpactLoading(true);
+    try {
+      if (selectedSymbol) {
+        await persistDirtyNotes(repositoryId, selectedSymbol.id, notes);
+        setNotes((items) => items.map((note) => ({ ...note, isDirty: false })));
+      }
+      const report = await loadChangeImpact(repositoryId);
+      if (report.status === "noBaseline") {
+        setNotice("비교할 이전 분석이 없습니다. 코드 분석을 실행해 기준을 저장하세요.");
+      } else if (report.status === "unchanged") {
+        setNotice("마지막 분석 이후 함수 호출 구조의 변경을 찾지 못했습니다.");
+      } else {
+        setNotice(
+          `${report.changes.length}개 함수가 바뀌었고 ${report.affectedCallers.length}개 호출자를 확인해야 합니다.`,
+        );
+      }
+    } catch (error) {
+      setNotice(`변경 영향을 확인하지 못했습니다: ${String(error)}`);
+    } finally {
+      setImpactLoading(false);
       setBusy(false);
     }
   };
@@ -435,6 +535,9 @@ function App() {
       }
       const summary = await api.analyzeRepository(repositoryId);
       setAnalysis(summary);
+      setChangeImpact(null);
+      const refreshedRepositories = await api.listRepositories();
+      setRepositories(refreshedRepositories);
       const nextSymbols = await loadSymbols(repositoryId, query);
       await loadOrphanNotes(repositoryId);
       setNotice(
@@ -473,6 +576,12 @@ function App() {
       setSourceFile(null);
       setNotes([]);
       setSelectedNoteId(null);
+      setAnalysis(null);
+      setChangeImpact(null);
+      setSelectedCollectionId(null);
+      setExploreCollections([]);
+      setCollectionAddOpen(false);
+      setCollectionAddTarget("");
     } catch (error) {
       setNotice(`저장소를 바꾸기 전에 분석 문서를 저장하지 못했습니다: ${String(error)}`);
     } finally {
@@ -536,6 +645,48 @@ function App() {
       } catch (textError) {
         setNotice(`Confluence용 문서를 복사하지 못했습니다: ${String(textError || htmlError)}`);
       }
+    }
+  };
+
+  const openCollectionAddDialog = async () => {
+    if (!repositoryId || !selectedSymbol) return;
+    setBusy(true);
+    try {
+      const items = await api.listCollections(repositoryId);
+      setExploreCollections(items);
+      const restoredTarget = selectedCollectionId !== null
+        && items.some((item) => item.id === selectedCollectionId)
+        ? selectedCollectionId
+        : null;
+      setCollectionAddTarget(restoredTarget ?? items[0]?.id ?? "new");
+      setNewCollectionTitle("");
+      setCollectionAddOpen(true);
+    } catch (error) {
+      setNotice(`컬렉션 목록을 읽지 못했습니다: ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addSelectedSymbolFromExplore = async () => {
+    if (!repositoryId || !selectedSymbol) return;
+    setBusy(true);
+    try {
+      let targetId = collectionAddTarget;
+      if (targetId === "" || targetId === "new") {
+        const created = await api.createCollection(repositoryId, newCollectionTitle || "새 기능 흐름", "", []);
+        targetId = created.collection.id;
+        setSelectedCollectionId(targetId);
+      }
+      await api.addCollectionItem(repositoryId, targetId, selectedSymbol.id, "other", "");
+      setCollectionAddOpen(false);
+      setCollectionAddTarget(targetId);
+      setNotice(`${selectedSymbol.fqn}을(를) 컬렉션에 추가했습니다.`);
+    } catch (error) {
+      const message = String(error);
+      setNotice(message.includes("이미") ? "이미 이 컬렉션에 들어 있는 함수입니다." : `컬렉션에 함수를 추가하지 못했습니다: ${message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -745,12 +896,24 @@ function App() {
             </div>
           )}
           <div className="analysis-action">
-            <button className="primary-button" onClick={() => void runAnalysis()} disabled={!repositoryId || busy}>
-              {busy ? "처리 중…" : "코드 분석"}
+            <button className="primary-button" onClick={() => void runAnalysis()} disabled={!repositoryId || busy || impactLoading}>
+              {busy || impactLoading ? "처리 중…" : "코드 분석"}
             </button>
             <AnalysisHelp />
           </div>
+          <div className="analysis-action change-impact-action">
+            <button
+              className="secondary-button impact-analysis-button"
+              onClick={() => void runChangeImpact()}
+              disabled={!repositoryId || busy || impactLoading}
+              type="button"
+            >
+              {impactLoading ? "변경 확인 중…" : "변경된 코드 확인하기"}
+            </button>
+            <ChangeImpactHelp />
+          </div>
           {analysis && <p className="analysis-summary">{analysis.edgeCount}개 호출 관계 · {analysis.status}</p>}
+          {changeImpact && <ChangeImpactPanel report={changeImpact} />}
 
           <label className="field-label" htmlFor="symbol-search">함수 찾기</label>
           <input
@@ -790,6 +953,14 @@ function App() {
                 <SelectedSymbolHeading symbol={selectedSymbol} />
               </div>
               <div className="graph-actions">
+                <button
+                  className="secondary-button small"
+                  disabled={!selectedSymbol || !repositoryId || busy}
+                  onClick={() => void openCollectionAddDialog()}
+                  type="button"
+                >
+                  컬렉션에 추가
+                </button>
                 <label className="depth-control">
                   펼칠 깊이
                   <select value={depth} onChange={(event) => setDepth(Number(event.target.value))} disabled={!selectedSymbol}>
@@ -909,7 +1080,33 @@ function App() {
             </div>
           </section>
         )}
+
+        {activeWorkspace === "collections" && (
+          <CollectionsWorkspace
+            busy={busy}
+            repositoryId={repositoryId}
+            selectedCollectionId={selectedCollectionId}
+            selectedSymbol={selectedSymbol}
+            onNotice={setNotice}
+            onOpenRecord={() => setActiveWorkspace((current) => selectWorkspace(current, "record"))}
+            onSelectSymbol={(symbolId) => void selectSymbol(symbolId)}
+            onSelectionChange={setSelectedCollectionId}
+          />
+        )}
       </div>
+      {collectionAddOpen && selectedSymbol && (
+        <ExploreCollectionAddDialog
+          collections={exploreCollections}
+          disabled={busy}
+          newCollectionTitle={newCollectionTitle}
+          selectedCollectionId={collectionAddTarget}
+          selectedSymbol={selectedSymbol}
+          onCancel={() => setCollectionAddOpen(false)}
+          onNewCollectionTitleChange={setNewCollectionTitle}
+          onSelectedCollectionChange={setCollectionAddTarget}
+          onSubmit={() => void addSelectedSymbolFromExplore()}
+        />
+      )}
     </main>
   );
 }

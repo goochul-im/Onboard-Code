@@ -19,7 +19,21 @@ export interface ConfluenceExport {
   unresolvedReferenceCount: number;
 }
 
-export function buildConfluenceExport(input: ConfluenceExportInput): ConfluenceExport {
+export interface MarkdownConfluenceRenderInput {
+  markdown: string;
+  relativePath: string;
+  source: string;
+  language: SourceLanguage;
+}
+
+export interface MarkdownConfluenceRender {
+  html: string;
+  text: string;
+  resolvedReferenceCount: number;
+  unresolvedReferenceCount: number;
+}
+
+export function renderMarkdownForConfluence(input: MarkdownConfluenceRenderInput): MarkdownConfluenceRender {
   const sourceLines = input.source.split(/\r?\n/);
   const segments = input.markdown.split(/(\[line:\d+(?:-\d+)?\])/g).filter(Boolean);
   const htmlBody: string[] = [];
@@ -57,6 +71,16 @@ export function buildConfluenceExport(input: ConfluenceExportInput): ConfluenceE
     );
   }
 
+  return {
+    html: htmlBody.join(""),
+    text: textBody.join("\n\n"),
+    resolvedReferenceCount,
+    unresolvedReferenceCount,
+  };
+}
+
+export function buildConfluenceExport(input: ConfluenceExportInput): ConfluenceExport {
+  const body = renderMarkdownForConfluence(input);
   const symbol = `${input.symbolFqn}${input.signature}`;
   const tagsHtml = input.tags.length > 0
     ? `<p><strong>태그:</strong> ${input.tags.map(escapeHtml).join(", ")}</p>`
@@ -66,16 +90,16 @@ export function buildConfluenceExport(input: ConfluenceExportInput): ConfluenceE
     html: [
       `<h1>${escapeHtml(input.title)}</h1>`,
       `<p><strong>함수:</strong> <code>${escapeHtml(symbol)}</code><br><strong>소스:</strong> ${escapeHtml(input.relativePath)}</p>`,
-      htmlBody.join(""),
+      body.html,
       tagsHtml,
     ].join(""),
-    text: `# ${input.title}\n\n함수: ${symbol}\n소스: ${input.relativePath}\n\n${textBody.join("\n\n")}${tagsText}`,
-    resolvedReferenceCount,
-    unresolvedReferenceCount,
+    text: `# ${input.title}\n\n함수: ${symbol}\n소스: ${input.relativePath}\n\n${body.text}${tagsText}`,
+    resolvedReferenceCount: body.resolvedReferenceCount,
+    unresolvedReferenceCount: body.unresolvedReferenceCount,
   };
 }
 
-function renderMarkdownHtml(markdown: string): string {
+export function renderMarkdownHtml(markdown: string): string {
   const lines = markdown.split("\n");
   const blocks: string[] = [];
   let index = 0;

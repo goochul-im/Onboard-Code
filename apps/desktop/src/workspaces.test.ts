@@ -7,6 +7,7 @@ describe("workspace layout", () => {
     expect(workspaces).toEqual([
       expect.objectContaining({ id: "explore", primarySurface: "search-and-call-graph" }),
       expect.objectContaining({ id: "record", primarySurface: "source-markdown-split" }),
+      expect.objectContaining({ id: "collections", primarySurface: "feature-flow-collection" }),
     ]);
   });
 });

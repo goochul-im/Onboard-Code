@@ -21,6 +21,34 @@ export interface AnalysisSummary {
   status: "completed" | "partial";
 }
 
+export type ChangeImpactStatus = "noBaseline" | "unchanged" | "changed";
+export type ImpactChangeKind = "added" | "modified" | "deleted" | "moved";
+
+export interface ImpactChange {
+  kind: ImpactChangeKind;
+  symbol: SymbolRecord | null;
+  previousSymbol: SymbolRecord | null;
+}
+
+export interface ImpactCaller {
+  symbol: SymbolRecord;
+  distance: number;
+  changedSymbols: string[];
+}
+
+export interface ChangeImpactReport {
+  status: ChangeImpactStatus;
+  repositoryId: string;
+  baseRevision: string | null;
+  currentRevision: string;
+  branch: string;
+  isDirty: boolean;
+  changedFiles: string[];
+  changes: ImpactChange[];
+  affectedCallers: ImpactCaller[];
+  diagnosticCount: number;
+}
+
 export interface SymbolRecord {
   id: string;
   language: SourceLanguage;
@@ -45,6 +73,51 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: SymbolRecord[];
   edges: GraphEdge[];
+}
+
+export type CollectionItemRole = "entry" | "core" | "data" | "external" | "error" | "other";
+export type CollectionItemStatus = "linked" | "orphan";
+
+export interface CollectionSummary {
+  id: number;
+  repositoryId: string;
+  title: string;
+  overviewMarkdown: string;
+  tags: string[];
+  createdRevision: string;
+  itemCount: number;
+  orphanCount: number;
+  changedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionItem {
+  id: number;
+  collectionId: number;
+  repositoryId: string;
+  symbolId: string | null;
+  symbolFqn: string;
+  symbolSignature: string;
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+  astFingerprint: string;
+  role: CollectionItemRole | string;
+  memo: string;
+  status: CollectionItemStatus;
+  sortOrder: number;
+  addedRevision: string;
+  reviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  symbol: SymbolRecord | null;
+  isChanged: boolean;
+}
+
+export interface CollectionDetail {
+  collection: CollectionSummary;
+  items: CollectionItem[];
 }
 
 export interface NoteRecord {

@@ -1,5 +1,6 @@
 mod analysis;
 mod database;
+mod impact;
 mod indexer;
 mod repository;
 mod restoration;
@@ -8,9 +9,11 @@ use std::{path::PathBuf, sync::Mutex};
 
 use analysis::IndexedSymbol;
 use database::{
-    AnalysisSummary, Database, GraphData, NoteRecord, OrphanNote, RepositoryRecord, SourceFile,
-    WorkspaceSnapshot, WorkspaceSnapshotRequest,
+    AnalysisSummary, CollectionDetail, CollectionItem, CollectionSummary, Database, GraphData,
+    NoteRecord, OrphanNote, RepositoryRecord, SourceFile, WorkspaceSnapshot,
+    WorkspaceSnapshotRequest,
 };
+use impact::ChangeImpactReport;
 use restoration::{RestorationRequest, RestorationValidation};
 use tauri::{Manager, State};
 
@@ -152,6 +155,238 @@ fn get_graph(
 }
 
 #[tauri::command]
+fn get_change_impact(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<ChangeImpactReport, String> {
+    let database = state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?;
+    impact::analyze_change_impact(&database, &repository_id)
+}
+
+#[tauri::command]
+fn list_collections(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<CollectionSummary>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .list_collections(&repository_id)
+        .map_err(|error| format!("컬렉션 목록을 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn search_collections(
+    repository_id: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<CollectionSummary>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .search_collections(&repository_id, &query)
+        .map_err(|error| format!("컬렉션을 검색할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn get_collection(
+    repository_id: String,
+    collection_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Option<CollectionDetail>, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .get_collection(&repository_id, collection_id)
+        .map_err(|error| format!("컬렉션을 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn create_collection(
+    repository_id: String,
+    title: String,
+    overview_markdown: String,
+    tags: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<CollectionDetail, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .create_collection(
+            &repository_id,
+            &title,
+            &overview_markdown,
+            &clean_tags(tags),
+        )
+        .map_err(|error| format!("컬렉션을 만들 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn update_collection(
+    repository_id: String,
+    collection_id: i64,
+    title: String,
+    overview_markdown: String,
+    tags: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<CollectionDetail, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .update_collection(
+            &repository_id,
+            collection_id,
+            &title,
+            &overview_markdown,
+            &clean_tags(tags),
+        )
+        .map_err(|error| format!("컬렉션을 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn delete_collection(
+    repository_id: String,
+    collection_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .delete_collection(&repository_id, collection_id)
+        .map_err(|error| format!("컬렉션을 삭제할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn add_collection_item(
+    repository_id: String,
+    collection_id: i64,
+    symbol_id: String,
+    role: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<CollectionDetail, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .add_collection_item(&repository_id, collection_id, &symbol_id, &role, &memo)
+        .map_err(|error| {
+            if matches!(error, rusqlite::Error::InvalidQuery) {
+                "이미 이 컬렉션에 들어 있는 함수입니다.".to_owned()
+            } else {
+                format!("컬렉션에 함수를 추가할 수 없습니다: {error}")
+            }
+        })
+}
+
+#[tauri::command]
+fn update_collection_item(
+    repository_id: String,
+    collection_id: i64,
+    item_id: i64,
+    role: String,
+    memo: String,
+    state: State<'_, AppState>,
+) -> Result<CollectionItem, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .update_collection_item(&repository_id, collection_id, item_id, &role, &memo)
+        .map_err(|error| format!("컬렉션 항목을 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn reorder_collection_items(
+    repository_id: String,
+    collection_id: i64,
+    item_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<CollectionDetail, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .reorder_collection_items(&repository_id, collection_id, &item_ids)
+        .map_err(|error| format!("컬렉션 순서를 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn remove_collection_item(
+    repository_id: String,
+    collection_id: i64,
+    item_id: i64,
+    state: State<'_, AppState>,
+) -> Result<CollectionDetail, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .remove_collection_item(&repository_id, collection_id, item_id)
+        .map_err(|error| format!("컬렉션 항목을 삭제할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn mark_collection_item_reviewed(
+    repository_id: String,
+    collection_id: i64,
+    item_id: i64,
+    state: State<'_, AppState>,
+) -> Result<CollectionItem, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .mark_collection_item_reviewed(&repository_id, collection_id, item_id)
+        .map_err(|error| format!("컬렉션 항목 검토 상태를 저장할 수 없습니다: {error}"))
+}
+
+#[tauri::command]
+fn relink_collection_item(
+    repository_id: String,
+    collection_id: i64,
+    item_id: i64,
+    symbol_id: String,
+    state: State<'_, AppState>,
+) -> Result<CollectionItem, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .relink_collection_item(&repository_id, collection_id, item_id, &symbol_id)
+        .map_err(|error| {
+            if matches!(error, rusqlite::Error::InvalidQuery) {
+                "선택한 함수는 이미 이 컬렉션에 연결되어 있습니다.".to_owned()
+            } else {
+                format!("컬렉션 항목을 다시 연결할 수 없습니다: {error}")
+            }
+        })
+}
+
+#[tauri::command]
+fn get_collection_graph(
+    repository_id: String,
+    collection_id: i64,
+    state: State<'_, AppState>,
+) -> Result<GraphData, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "앱 데이터베이스 잠금을 얻을 수 없습니다.".to_owned())?
+        .collection_graph(&repository_id, collection_id)
+        .map_err(|error| format!("컬렉션 호출 그래프를 읽을 수 없습니다: {error}"))
+}
+
+#[tauri::command]
 fn list_notes(
     repository_id: String,
     symbol_id: String,
@@ -278,6 +513,14 @@ fn clean_note_title(title: String) -> String {
     }
 }
 
+fn clean_tags(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| !tag.is_empty())
+        .take(20)
+        .collect()
+}
+
 #[tauri::command]
 fn list_orphan_notes(
     repository_id: String,
@@ -351,6 +594,20 @@ pub fn run() {
             current_workspace_snapshot,
             search_symbols,
             get_graph,
+            get_change_impact,
+            list_collections,
+            search_collections,
+            get_collection,
+            create_collection,
+            update_collection,
+            delete_collection,
+            add_collection_item,
+            update_collection_item,
+            reorder_collection_items,
+            remove_collection_item,
+            mark_collection_item_reviewed,
+            relink_collection_item,
+            get_collection_graph,
             list_notes,
             get_note,
             create_note,

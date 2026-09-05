@@ -72,8 +72,25 @@ describe("workspace snapshot", () => {
       sourceScrollTop: 240,
       markdownSelection: { start: 8, end: 8 },
       markdownScrollTop: 90,
+      selectedCollectionId: 12,
     };
     expect(parseWorkspaceState(serializeWorkspaceState(state))).toEqual(state);
+  });
+
+  it("accepts Collections as a restorable workspace", () => {
+    const state = JSON.stringify({
+      version: 1,
+      activeWorkspace: "collections",
+      query: "",
+      depth: 1,
+      selectedSymbol: null,
+      selectedNoteId: null,
+      noteDrafts: [],
+      selectedCollectionId: 9,
+    });
+
+    expect(parseWorkspaceState(state)?.activeWorkspace).toBe("collections");
+    expect(parseWorkspaceState(state)?.selectedCollectionId).toBe(9);
   });
 
   it("rejects incompatible and malformed snapshots", () => {

@@ -22,6 +22,7 @@ export interface PersistedWorkspaceState {
   sourceScrollTop: number;
   markdownSelection: { start: number; end: number } | null;
   markdownScrollTop: number;
+  selectedCollectionId: number | null;
 }
 
 /**
@@ -56,6 +57,7 @@ export function parseWorkspaceState(value: string): PersistedWorkspaceState | nu
       sourceScrollTop: validOffset(state.sourceScrollTop) ? state.sourceScrollTop : 0,
       markdownSelection: validSelection(state.markdownSelection) ? state.markdownSelection : null,
       markdownScrollTop: validOffset(state.markdownScrollTop) ? state.markdownScrollTop : 0,
+      selectedCollectionId: Number.isInteger(state.selectedCollectionId) ? state.selectedCollectionId! : null,
     };
   } catch {
     return null;
@@ -82,7 +84,7 @@ function validGraphViewport(value: unknown): value is { zoom: number; panX: numb
 }
 
 function isWorkspace(value: unknown): value is Workspace {
-  return value === "explore" || value === "record";
+  return value === "explore" || value === "record" || value === "collections";
 }
 
 function normalizeWorkspace(value: unknown): Workspace | null {

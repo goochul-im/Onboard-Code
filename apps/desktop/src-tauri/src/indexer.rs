@@ -8,9 +8,16 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct RepositoryAnalysis {
     pub source_file_count: usize,
+    pub source_files: Vec<AnalyzedSourceFile>,
     pub symbols: Vec<IndexedSymbol>,
     pub edges: Vec<IndexedEdge>,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalyzedSourceFile {
+    pub relative_path: String,
+    pub content_fingerprint: String,
 }
 
 pub fn analyze_repository(root_path: &str) -> Result<RepositoryAnalysis, String> {
@@ -21,6 +28,7 @@ pub fn analyze_repository(root_path: &str) -> Result<RepositoryAnalysis, String>
     let mut source_file_count = 0;
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
+    let mut source_files = Vec::new();
     let mut diagnostics = Vec::new();
 
     for relative_path in relative_paths {
@@ -78,15 +86,29 @@ pub fn analyze_repository(root_path: &str) -> Result<RepositoryAnalysis, String>
             }
             Err(error) => diagnostics.push(format!("{relative_path_text}: {error}")),
         }
+        source_files.push(AnalyzedSourceFile {
+            relative_path: relative_path_text,
+            content_fingerprint: content_fingerprint(&source),
+        });
     }
 
     let edges = resolve_calls(&symbols, &raw_calls);
     Ok(RepositoryAnalysis {
         source_file_count,
+        source_files,
         symbols,
         edges,
         diagnostics,
     })
+}
+
+fn content_fingerprint(source: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]

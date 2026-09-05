@@ -268,7 +268,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   );
 });
 
-function MarkdownPreview({
+export function MarkdownPreview({
   value,
   onLineReferenceClick,
 }: {

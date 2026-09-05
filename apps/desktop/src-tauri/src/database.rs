@@ -1,11 +1,15 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fs,
+    path::Path,
+};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     analysis::{EdgeConfidence, IndexedEdge, IndexedSymbol},
-    indexer::RepositoryAnalysis,
+    indexer::{AnalyzedSourceFile, RepositoryAnalysis},
     repository::RepositorySnapshot,
 };
 
@@ -86,6 +90,54 @@ pub struct SourceFile {
     pub end_line: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionSummary {
+    pub id: i64,
+    pub repository_id: String,
+    pub title: String,
+    pub overview_markdown: String,
+    pub tags: Vec<String>,
+    pub created_revision: String,
+    pub item_count: usize,
+    pub orphan_count: usize,
+    pub changed_count: usize,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionDetail {
+    pub collection: CollectionSummary,
+    pub items: Vec<CollectionItem>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionItem {
+    pub id: i64,
+    pub collection_id: i64,
+    pub repository_id: String,
+    pub symbol_id: Option<String>,
+    pub symbol_fqn: String,
+    pub symbol_signature: String,
+    pub relative_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub ast_fingerprint: String,
+    pub role: String,
+    pub memo: String,
+    pub status: String,
+    pub sort_order: i64,
+    pub added_revision: String,
+    pub reviewed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub symbol: Option<IndexedSymbol>,
+    pub is_changed: bool,
+}
+
 pub const WORKSPACE_SNAPSHOT_SCHEMA_VERSION: i64 = 1;
 pub const WORKSPACE_DATABASE_FORMAT_VERSION: i64 = 1;
 
@@ -146,6 +198,13 @@ impl Database {
               diagnostics_json TEXT NOT NULL DEFAULT '[]'
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_source_files (
+              analysis_run_id INTEGER NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+              relative_path TEXT NOT NULL,
+              content_fingerprint TEXT NOT NULL,
+              PRIMARY KEY (analysis_run_id, relative_path)
+            );
+
             CREATE TABLE IF NOT EXISTS symbols (
               id TEXT PRIMARY KEY NOT NULL,
               repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -187,6 +246,46 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS notes_symbol_lookup
               ON notes(repository_id, symbol_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS collections (
+              id INTEGER PRIMARY KEY,
+              repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,
+              overview_markdown TEXT NOT NULL DEFAULT '',
+              tags_json TEXT NOT NULL DEFAULT '[]',
+              created_revision TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS collections_repository_lookup
+              ON collections(repository_id, updated_at DESC, title COLLATE NOCASE);
+
+            CREATE TABLE IF NOT EXISTS collection_items (
+              id INTEGER PRIMARY KEY,
+              collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+              repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+              symbol_id TEXT,
+              symbol_fqn TEXT NOT NULL,
+              symbol_signature TEXT NOT NULL,
+              relative_path TEXT NOT NULL,
+              start_line INTEGER NOT NULL,
+              end_line INTEGER NOT NULL,
+              ast_fingerprint TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT '',
+              memo TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'orphan')),
+              sort_order INTEGER NOT NULL,
+              added_revision TEXT NOT NULL DEFAULT '',
+              reviewed_at TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS collection_items_collection_order
+              ON collection_items(collection_id, sort_order, id);
+            CREATE INDEX IF NOT EXISTS collection_items_relink_lookup
+              ON collection_items(repository_id, status, symbol_fqn, symbol_signature, ast_fingerprint);
 
             CREATE TABLE IF NOT EXISTS graph_preferences (
               repository_id TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
@@ -327,41 +426,11 @@ impl Database {
         for edge in &analysis.edges {
             insert_edge(&transaction, repository_id, edge)?;
         }
-        transaction.execute(
-            r#"
-            UPDATE notes
-            SET status = 'orphan'
-            WHERE repository_id = ?1
-              AND NOT EXISTS (
-                SELECT 1 FROM symbols
-                WHERE symbols.repository_id = notes.repository_id
-                  AND symbols.id = notes.symbol_id
-              )
-            "#,
-            [repository_id],
-        )?;
-        transaction.execute(
-            r#"
-            UPDATE notes
-            SET symbol_id = (
-                  SELECT id FROM symbols
-                  WHERE symbols.repository_id = notes.repository_id
-                    AND symbols.fqn = notes.symbol_fqn
-                    AND symbols.signature = notes.symbol_signature
-                  LIMIT 1
-                ),
-                status = 'linked'
-            WHERE repository_id = ?1
-              AND status = 'orphan'
-              AND EXISTS (
-                SELECT 1 FROM symbols
-                WHERE symbols.repository_id = notes.repository_id
-                  AND symbols.fqn = notes.symbol_fqn
-                  AND symbols.signature = notes.symbol_signature
-              )
-            "#,
-            [repository_id],
-        )?;
+        for source_file in &analysis.source_files {
+            insert_analysis_source_file(&transaction, analysis_run_id, source_file)?;
+        }
+        relink_notes_after_analysis(&transaction, repository_id)?;
+        relink_collection_items_after_analysis(&transaction, repository_id)?;
         transaction.execute(
             r#"
             UPDATE analysis_runs
@@ -642,6 +711,450 @@ impl Database {
         results
     }
 
+    pub fn list_collections(
+        &self,
+        repository_id: &str,
+    ) -> rusqlite::Result<Vec<CollectionSummary>> {
+        self.collection_summaries(repository_id, None)
+    }
+
+    pub fn search_collections(
+        &self,
+        repository_id: &str,
+        query: &str,
+    ) -> rusqlite::Result<Vec<CollectionSummary>> {
+        let normalized_query = query.trim().to_lowercase();
+        if normalized_query.is_empty() {
+            return self.list_collections(repository_id);
+        }
+        let summaries = self.collection_summaries(repository_id, None)?;
+        let matching_ids = self.matching_collection_ids(repository_id, &normalized_query)?;
+        Ok(summaries
+            .into_iter()
+            .filter(|summary| {
+                matching_ids.contains(&summary.id)
+                    || summary.title.to_lowercase().contains(&normalized_query)
+                    || summary
+                        .overview_markdown
+                        .to_lowercase()
+                        .contains(&normalized_query)
+                    || summary
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&normalized_query))
+            })
+            .collect())
+    }
+
+    pub fn get_collection(
+        &self,
+        repository_id: &str,
+        collection_id: i64,
+    ) -> rusqlite::Result<Option<CollectionDetail>> {
+        let collection = self
+            .collection_summaries(repository_id, Some(collection_id))?
+            .into_iter()
+            .next();
+        let Some(collection) = collection else {
+            return Ok(None);
+        };
+        let items = self.collection_items(repository_id, collection_id)?;
+        Ok(Some(CollectionDetail { collection, items }))
+    }
+
+    pub fn create_collection(
+        &mut self,
+        repository_id: &str,
+        title: &str,
+        overview_markdown: &str,
+        tags: &[String],
+    ) -> rusqlite::Result<CollectionDetail> {
+        let clean_title = clean_collection_title(title);
+        let tags_json = tags_json(tags)?;
+        let revision = self.collection_revision(repository_id)?;
+        let transaction = self.connection.transaction()?;
+        require_repository(&transaction, repository_id)?;
+        transaction.execute(
+            r#"
+            INSERT INTO collections (repository_id, title, overview_markdown, tags_json, created_revision)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![repository_id, clean_title, overview_markdown, tags_json, revision],
+        )?;
+        let collection_id = transaction.last_insert_rowid();
+        transaction.commit()?;
+        self.get_collection(repository_id, collection_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn update_collection(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        title: &str,
+        overview_markdown: &str,
+        tags: &[String],
+    ) -> rusqlite::Result<CollectionDetail> {
+        let clean_title = clean_collection_title(title);
+        let tags_json = tags_json(tags)?;
+        let changed = self.connection.execute(
+            r#"
+            UPDATE collections
+            SET title = ?1, overview_markdown = ?2, tags_json = ?3, updated_at = CURRENT_TIMESTAMP
+            WHERE repository_id = ?4 AND id = ?5
+            "#,
+            params![
+                clean_title,
+                overview_markdown,
+                tags_json,
+                repository_id,
+                collection_id
+            ],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        self.get_collection(repository_id, collection_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn delete_collection(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+    ) -> rusqlite::Result<()> {
+        let changed = self.connection.execute(
+            "DELETE FROM collections WHERE repository_id = ?1 AND id = ?2",
+            params![repository_id, collection_id],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        }
+    }
+
+    pub fn add_collection_item(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        symbol_id: &str,
+        role: &str,
+        memo: &str,
+    ) -> rusqlite::Result<CollectionDetail> {
+        let symbol = self
+            .symbol_by_id(repository_id, symbol_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let revision = self.collection_revision(repository_id)?;
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let duplicate_exists: bool = transaction.query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1
+              FROM collection_items
+              WHERE repository_id = ?1
+                AND collection_id = ?2
+                AND symbol_fqn = ?3
+                AND symbol_signature = ?4
+                AND relative_path = ?5
+            )
+            "#,
+            params![
+                repository_id,
+                collection_id,
+                symbol.fqn,
+                symbol.signature,
+                symbol.relative_path,
+            ],
+            |row| row.get(0),
+        )?;
+        if duplicate_exists {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let sort_order: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM collection_items WHERE collection_id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO collection_items (
+              collection_id, repository_id, symbol_id, symbol_fqn, symbol_signature,
+              relative_path, start_line, end_line, ast_fingerprint, role, memo,
+              status, sort_order, added_revision
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'linked', ?12, ?13)
+            "#,
+            params![
+                collection_id,
+                repository_id,
+                symbol.id,
+                symbol.fqn,
+                symbol.signature,
+                symbol.relative_path,
+                symbol.start_line,
+                symbol.end_line,
+                symbol.ast_fingerprint,
+                role.trim(),
+                memo,
+                sort_order,
+                revision,
+            ],
+        )?;
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.get_collection(repository_id, collection_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn update_collection_item(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        item_id: i64,
+        role: &str,
+        memo: &str,
+    ) -> rusqlite::Result<CollectionItem> {
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let changed = transaction.execute(
+            r#"
+            UPDATE collection_items
+            SET role = ?1, memo = ?2, updated_at = CURRENT_TIMESTAMP
+            WHERE repository_id = ?3 AND collection_id = ?4 AND id = ?5
+            "#,
+            params![role.trim(), memo, repository_id, collection_id, item_id],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.collection_item_by_id(repository_id, collection_id, item_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn reorder_collection_items(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        item_ids: &[i64],
+    ) -> rusqlite::Result<CollectionDetail> {
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let existing_ids = collection_item_ids(&transaction, repository_id, collection_id)?;
+        let requested_ids = item_ids.iter().copied().collect::<BTreeSet<_>>();
+        if requested_ids.len() != item_ids.len() || requested_ids != existing_ids {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        for (sort_order, item_id) in item_ids.iter().enumerate() {
+            transaction.execute(
+                r#"
+                UPDATE collection_items
+                SET sort_order = ?1, updated_at = CURRENT_TIMESTAMP
+                WHERE repository_id = ?2 AND collection_id = ?3 AND id = ?4
+                "#,
+                params![sort_order as i64, repository_id, collection_id, item_id],
+            )?;
+        }
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.get_collection(repository_id, collection_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn remove_collection_item(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        item_id: i64,
+    ) -> rusqlite::Result<CollectionDetail> {
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let changed = transaction.execute(
+            "DELETE FROM collection_items WHERE repository_id = ?1 AND collection_id = ?2 AND id = ?3",
+            params![repository_id, collection_id, item_id],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        compact_collection_order(&transaction, repository_id, collection_id)?;
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.get_collection(repository_id, collection_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn mark_collection_item_reviewed(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        item_id: i64,
+    ) -> rusqlite::Result<CollectionItem> {
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let symbol =
+            collection_item_current_symbol(&transaction, repository_id, collection_id, item_id)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        transaction.execute(
+            r#"
+            UPDATE collection_items
+            SET symbol_id = ?1,
+                symbol_fqn = ?2,
+                symbol_signature = ?3,
+                relative_path = ?4,
+                start_line = ?5,
+                end_line = ?6,
+                ast_fingerprint = ?7,
+                status = 'linked',
+                reviewed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE repository_id = ?8 AND collection_id = ?9 AND id = ?10
+            "#,
+            params![
+                symbol.id,
+                symbol.fqn,
+                symbol.signature,
+                symbol.relative_path,
+                symbol.start_line,
+                symbol.end_line,
+                symbol.ast_fingerprint,
+                repository_id,
+                collection_id,
+                item_id,
+            ],
+        )?;
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.collection_item_by_id(repository_id, collection_id, item_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn relink_collection_item(
+        &mut self,
+        repository_id: &str,
+        collection_id: i64,
+        item_id: i64,
+        symbol_id: &str,
+    ) -> rusqlite::Result<CollectionItem> {
+        let symbol = self
+            .symbol_by_id(repository_id, symbol_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let transaction = self.connection.transaction()?;
+        require_collection(&transaction, repository_id, collection_id)?;
+        let duplicate_exists: bool = transaction.query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1
+              FROM collection_items
+              WHERE repository_id = ?1
+                AND collection_id = ?2
+                AND id <> ?3
+                AND status = 'linked'
+                AND symbol_id = ?4
+            )
+            "#,
+            params![repository_id, collection_id, item_id, symbol.id],
+            |row| row.get(0),
+        )?;
+        if duplicate_exists {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let changed = transaction.execute(
+            r#"
+            UPDATE collection_items
+            SET symbol_id = ?1,
+                symbol_fqn = ?2,
+                symbol_signature = ?3,
+                relative_path = ?4,
+                start_line = ?5,
+                end_line = ?6,
+                ast_fingerprint = ?7,
+                status = 'linked',
+                reviewed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE repository_id = ?8 AND collection_id = ?9 AND id = ?10
+            "#,
+            params![
+                symbol.id,
+                symbol.fqn,
+                symbol.signature,
+                symbol.relative_path,
+                symbol.start_line,
+                symbol.end_line,
+                symbol.ast_fingerprint,
+                repository_id,
+                collection_id,
+                item_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        touch_collection(&transaction, collection_id)?;
+        transaction.commit()?;
+        self.collection_item_by_id(repository_id, collection_id, item_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn collection_graph(
+        &self,
+        repository_id: &str,
+        collection_id: i64,
+    ) -> rusqlite::Result<GraphData> {
+        if self
+            .collection_summaries(repository_id, Some(collection_id))?
+            .is_empty()
+        {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        let symbol_ids = self
+            .collection_items(repository_id, collection_id)?
+            .into_iter()
+            .filter(|item| item.status == "linked")
+            .filter_map(|item| item.symbol_id)
+            .collect::<HashSet<_>>();
+        let nodes = self.symbols_by_ids(repository_id, &symbol_ids)?;
+        if symbol_ids.is_empty() {
+            return Ok(GraphData {
+                nodes,
+                edges: Vec::new(),
+            });
+        }
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT DISTINCT call_edges.id, call_edges.caller_symbol_id,
+                   call_edges.callee_symbol_id, call_edges.unresolved_name,
+                   call_edges.confidence, call_edges.source_line
+            FROM call_edges
+            JOIN collection_items AS caller_item
+              ON caller_item.repository_id = call_edges.repository_id
+             AND caller_item.collection_id = ?2
+             AND caller_item.status = 'linked'
+             AND caller_item.symbol_id = call_edges.caller_symbol_id
+            JOIN collection_items AS callee_item
+              ON callee_item.repository_id = call_edges.repository_id
+             AND callee_item.collection_id = ?2
+             AND callee_item.status = 'linked'
+             AND callee_item.symbol_id = call_edges.callee_symbol_id
+            WHERE call_edges.repository_id = ?1
+            "#,
+        )?;
+        let edges = statement
+            .query_map(params![repository_id, collection_id], |row| {
+                Ok(GraphEdge {
+                    id: row.get(0)?,
+                    source: row.get(1)?,
+                    target: row.get(2)?,
+                    unresolved_name: row.get(3)?,
+                    confidence: row.get(4)?,
+                    source_line: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(GraphData { nodes, edges })
+    }
+
     pub fn source_for_symbol(
         &self,
         repository_id: &str,
@@ -739,6 +1252,89 @@ impl Database {
             params![repository_id, revision],
             |row| row.get(0),
         )
+    }
+
+    pub fn latest_completed_analysis_revision(
+        &self,
+        repository_id: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT revision
+                FROM analysis_runs
+                WHERE repository_id = ?1
+                  AND status IN ('completed', 'partial')
+                  AND completed_at IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                [repository_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn latest_analysis_source_files(
+        &self,
+        repository_id: &str,
+    ) -> rusqlite::Result<Option<Vec<AnalyzedSourceFile>>> {
+        let analysis_run_id = self
+            .connection
+            .query_row(
+                r#"
+                SELECT id
+                FROM analysis_runs
+                WHERE repository_id = ?1
+                  AND status IN ('completed', 'partial')
+                  AND completed_at IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                [repository_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+
+        let Some(analysis_run_id) = analysis_run_id else {
+            return Ok(None);
+        };
+
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT relative_path, content_fingerprint
+            FROM analysis_source_files
+            WHERE analysis_run_id = ?1
+            ORDER BY relative_path COLLATE NOCASE
+            "#,
+        )?;
+        let rows = statement.query_map([analysis_run_id], |row| {
+            Ok(AnalyzedSourceFile {
+                relative_path: row.get(0)?,
+                content_fingerprint: row.get(1)?,
+            })
+        })?;
+        let source_files = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(source_files))
+    }
+
+    pub fn all_symbols(&self, repository_id: &str) -> rusqlite::Result<Vec<IndexedSymbol>> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT id, language, kind, fqn, signature, relative_path, start_line, end_line, ast_fingerprint
+            FROM symbols
+            WHERE repository_id = ?1
+            ORDER BY fqn COLLATE NOCASE
+            "#,
+        )?;
+        let results = statement
+            .query_map([repository_id], row_to_symbol)?
+            .collect::<rusqlite::Result<Vec<_>>>();
+        results
+    }
+
+    pub fn all_call_edges(&self, repository_id: &str) -> rusqlite::Result<Vec<GraphEdge>> {
+        self.all_graph_edges(repository_id)
     }
 
     pub fn symbol_matches_reference(
@@ -857,6 +1453,154 @@ impl Database {
             .collect::<rusqlite::Result<Vec<_>>>();
         results
     }
+
+    fn collection_summaries(
+        &self,
+        repository_id: &str,
+        collection_id: Option<i64>,
+    ) -> rusqlite::Result<Vec<CollectionSummary>> {
+        let sql = match collection_id {
+            Some(_) => {
+                r#"
+                SELECT collections.id, collections.repository_id, collections.title,
+                       collections.overview_markdown, collections.tags_json,
+                       collections.created_revision,
+                       COUNT(collection_items.id),
+                       SUM(CASE WHEN collection_items.status = 'orphan' THEN 1 ELSE 0 END),
+                       SUM(CASE
+                         WHEN collection_items.status = 'linked'
+                           AND symbols.id IS NOT NULL
+                           AND symbols.ast_fingerprint <> collection_items.ast_fingerprint
+                         THEN 1 ELSE 0 END),
+                       collections.created_at, collections.updated_at
+                FROM collections
+                LEFT JOIN collection_items ON collection_items.collection_id = collections.id
+                LEFT JOIN symbols ON symbols.repository_id = collections.repository_id
+                  AND symbols.id = collection_items.symbol_id
+                WHERE collections.repository_id = ?1 AND collections.id = ?2
+                GROUP BY collections.id
+                ORDER BY collections.updated_at DESC, collections.title COLLATE NOCASE
+                "#
+            }
+            None => {
+                r#"
+                SELECT collections.id, collections.repository_id, collections.title,
+                       collections.overview_markdown, collections.tags_json,
+                       collections.created_revision,
+                       COUNT(collection_items.id),
+                       SUM(CASE WHEN collection_items.status = 'orphan' THEN 1 ELSE 0 END),
+                       SUM(CASE
+                         WHEN collection_items.status = 'linked'
+                           AND symbols.id IS NOT NULL
+                           AND symbols.ast_fingerprint <> collection_items.ast_fingerprint
+                         THEN 1 ELSE 0 END),
+                       collections.created_at, collections.updated_at
+                FROM collections
+                LEFT JOIN collection_items ON collection_items.collection_id = collections.id
+                LEFT JOIN symbols ON symbols.repository_id = collections.repository_id
+                  AND symbols.id = collection_items.symbol_id
+                WHERE collections.repository_id = ?1
+                GROUP BY collections.id
+                ORDER BY collections.updated_at DESC, collections.title COLLATE NOCASE
+                "#
+            }
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let mapper = |row: &rusqlite::Row<'_>| row_to_collection_summary(row);
+        match collection_id {
+            Some(id) => statement
+                .query_map(params![repository_id, id], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>(),
+            None => statement
+                .query_map([repository_id], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>(),
+        }
+    }
+
+    fn matching_collection_ids(
+        &self,
+        repository_id: &str,
+        query: &str,
+    ) -> rusqlite::Result<HashSet<i64>> {
+        let like_query = format!("%{query}%");
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT DISTINCT collections.id
+            FROM collections
+            LEFT JOIN collection_items ON collection_items.collection_id = collections.id
+            WHERE collections.repository_id = ?1
+              AND (
+                lower(collections.title) LIKE ?2
+                OR lower(collections.overview_markdown) LIKE ?2
+                OR lower(collections.tags_json) LIKE ?2
+                OR lower(collection_items.symbol_fqn) LIKE ?2
+                OR lower(collection_items.symbol_signature) LIKE ?2
+                OR lower(collection_items.relative_path) LIKE ?2
+                OR lower(collection_items.role) LIKE ?2
+                OR lower(collection_items.memo) LIKE ?2
+              )
+            "#,
+        )?;
+        let ids = statement
+            .query_map(params![repository_id, like_query], |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        Ok(ids)
+    }
+
+    fn collection_revision(&self, repository_id: &str) -> rusqlite::Result<String> {
+        Ok(self
+            .latest_completed_analysis_revision(repository_id)?
+            .or_else(|| {
+                self.repository_by_id(repository_id)
+                    .ok()
+                    .flatten()
+                    .map(|repository| repository.head)
+            })
+            .unwrap_or_default())
+    }
+
+    fn collection_items(
+        &self,
+        repository_id: &str,
+        collection_id: i64,
+    ) -> rusqlite::Result<Vec<CollectionItem>> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT collection_items.id, collection_items.collection_id, collection_items.repository_id,
+                   collection_items.symbol_id, collection_items.symbol_fqn,
+                   collection_items.symbol_signature, collection_items.relative_path,
+                   collection_items.start_line, collection_items.end_line,
+                   collection_items.ast_fingerprint, collection_items.role, collection_items.memo,
+                   collection_items.status, collection_items.sort_order,
+                   collection_items.added_revision, collection_items.reviewed_at,
+                   collection_items.created_at, collection_items.updated_at,
+                   symbols.id, symbols.language, symbols.kind, symbols.fqn, symbols.signature,
+                   symbols.relative_path, symbols.start_line, symbols.end_line, symbols.ast_fingerprint
+            FROM collection_items
+            LEFT JOIN symbols ON symbols.repository_id = collection_items.repository_id
+              AND symbols.id = collection_items.symbol_id
+            WHERE collection_items.repository_id = ?1 AND collection_items.collection_id = ?2
+            ORDER BY collection_items.sort_order, collection_items.id
+            "#,
+        )?;
+        let items = statement
+            .query_map(
+                params![repository_id, collection_id],
+                row_to_collection_item,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(items)
+    }
+
+    fn collection_item_by_id(
+        &self,
+        repository_id: &str,
+        collection_id: i64,
+        item_id: i64,
+    ) -> rusqlite::Result<Option<CollectionItem>> {
+        self.collection_items(repository_id, collection_id)
+            .map(|items| items.into_iter().find(|item| item.id == item_id))
+    }
 }
 
 fn validate_workspace_snapshot(
@@ -901,6 +1645,305 @@ fn workspace_snapshot_by_id(
             row_to_workspace_snapshot,
         )
         .optional()
+}
+
+fn require_repository(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+) -> rusqlite::Result<()> {
+    let exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM repositories WHERE id = ?1)",
+        [repository_id],
+        |row| row.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    }
+}
+
+fn require_collection(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    collection_id: i64,
+) -> rusqlite::Result<()> {
+    let exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM collections WHERE repository_id = ?1 AND id = ?2)",
+        params![repository_id, collection_id],
+        |row| row.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    }
+}
+
+fn touch_collection(
+    transaction: &rusqlite::Transaction<'_>,
+    collection_id: i64,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "UPDATE collections SET updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+        [collection_id],
+    )?;
+    Ok(())
+}
+
+fn collection_item_ids(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    collection_id: i64,
+) -> rusqlite::Result<BTreeSet<i64>> {
+    let mut statement = transaction.prepare(
+        "SELECT id FROM collection_items WHERE repository_id = ?1 AND collection_id = ?2",
+    )?;
+    let ids = statement
+        .query_map(params![repository_id, collection_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    Ok(ids)
+}
+
+fn compact_collection_order(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    collection_id: i64,
+) -> rusqlite::Result<()> {
+    let mut statement = transaction.prepare(
+        "SELECT id FROM collection_items WHERE repository_id = ?1 AND collection_id = ?2 ORDER BY sort_order, id",
+    )?;
+    let ids = statement
+        .query_map(params![repository_id, collection_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
+    drop(statement);
+    for (sort_order, item_id) in ids.into_iter().enumerate() {
+        transaction.execute(
+            "UPDATE collection_items SET sort_order = ?1 WHERE id = ?2",
+            params![sort_order as i64, item_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn collection_item_current_symbol(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    collection_id: i64,
+    item_id: i64,
+) -> rusqlite::Result<Option<IndexedSymbol>> {
+    transaction
+        .query_row(
+            r#"
+            SELECT symbols.id, symbols.language, symbols.kind, symbols.fqn, symbols.signature,
+                   symbols.relative_path, symbols.start_line, symbols.end_line, symbols.ast_fingerprint
+            FROM collection_items
+            JOIN symbols ON symbols.repository_id = collection_items.repository_id
+              AND symbols.id = collection_items.symbol_id
+            WHERE collection_items.repository_id = ?1
+              AND collection_items.collection_id = ?2
+              AND collection_items.id = ?3
+              AND collection_items.status = 'linked'
+            "#,
+            params![repository_id, collection_id, item_id],
+            row_to_symbol,
+        )
+        .optional()
+}
+
+fn relink_notes_after_analysis(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        r#"
+        UPDATE notes
+        SET status = 'orphan'
+        WHERE repository_id = ?1
+          AND NOT EXISTS (
+            SELECT 1 FROM symbols
+            WHERE symbols.repository_id = notes.repository_id
+              AND symbols.id = notes.symbol_id
+          )
+        "#,
+        [repository_id],
+    )?;
+    transaction.execute(
+        r#"
+        UPDATE notes
+        SET symbol_id = (
+              SELECT id FROM symbols
+              WHERE symbols.repository_id = notes.repository_id
+                AND symbols.fqn = notes.symbol_fqn
+                AND symbols.signature = notes.symbol_signature
+              LIMIT 1
+            ),
+            status = 'linked'
+        WHERE repository_id = ?1
+          AND status = 'orphan'
+          AND EXISTS (
+            SELECT 1 FROM symbols
+            WHERE symbols.repository_id = notes.repository_id
+              AND symbols.fqn = notes.symbol_fqn
+              AND symbols.signature = notes.symbol_signature
+          )
+        "#,
+        [repository_id],
+    )?;
+    Ok(())
+}
+
+fn relink_collection_items_after_analysis(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        r#"
+        UPDATE collection_items
+        SET status = 'orphan', symbol_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE repository_id = ?1
+          AND (symbol_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM symbols
+            WHERE symbols.repository_id = collection_items.repository_id
+              AND symbols.id = collection_items.symbol_id
+          ))
+        "#,
+        [repository_id],
+    )?;
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT id, collection_id, symbol_fqn, symbol_signature, ast_fingerprint
+        FROM collection_items
+        WHERE repository_id = ?1 AND status = 'orphan'
+        ORDER BY id
+        "#,
+    )?;
+    let candidates = statement
+        .query_map([repository_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    for (item_id, collection_id, fqn, signature, ast_fingerprint) in candidates {
+        let symbol =
+            match unique_symbol_by_fqn_signature(transaction, repository_id, &fqn, &signature)? {
+                Some(symbol) => Some(symbol),
+                None => unique_symbol_by_fingerprint(transaction, repository_id, &ast_fingerprint)?,
+            };
+        if let Some(symbol) = symbol {
+            let duplicate_exists: bool = transaction.query_row(
+                r#"
+                SELECT EXISTS(
+                  SELECT 1
+                  FROM collection_items
+                  WHERE repository_id = ?1
+                    AND collection_id = ?2
+                    AND id <> ?3
+                    AND status = 'linked'
+                    AND symbol_id = ?4
+                )
+                "#,
+                params![repository_id, collection_id, item_id, symbol.id],
+                |row| row.get(0),
+            )?;
+            if duplicate_exists {
+                continue;
+            }
+            transaction.execute(
+                r#"
+                UPDATE collection_items
+                SET symbol_id = ?1,
+                    symbol_fqn = ?2,
+                    symbol_signature = ?3,
+                    relative_path = ?4,
+                    start_line = ?5,
+                    end_line = ?6,
+                    status = 'linked',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE repository_id = ?7 AND id = ?8
+                "#,
+                params![
+                    symbol.id,
+                    symbol.fqn,
+                    symbol.signature,
+                    symbol.relative_path,
+                    symbol.start_line,
+                    symbol.end_line,
+                    repository_id,
+                    item_id,
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn unique_symbol_by_fqn_signature(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    fqn: &str,
+    signature: &str,
+) -> rusqlite::Result<Option<IndexedSymbol>> {
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT id, language, kind, fqn, signature, relative_path, start_line, end_line, ast_fingerprint
+        FROM symbols
+        WHERE repository_id = ?1 AND fqn = ?2 AND signature = ?3
+        ORDER BY id
+        "#,
+    )?;
+    let symbols = statement
+        .query_map(params![repository_id, fqn, signature], row_to_symbol)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(if symbols.len() == 1 {
+        symbols.into_iter().next()
+    } else {
+        None
+    })
+}
+
+fn unique_symbol_by_fingerprint(
+    transaction: &rusqlite::Transaction<'_>,
+    repository_id: &str,
+    ast_fingerprint: &str,
+) -> rusqlite::Result<Option<IndexedSymbol>> {
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT id, language, kind, fqn, signature, relative_path, start_line, end_line, ast_fingerprint
+        FROM symbols
+        WHERE repository_id = ?1 AND ast_fingerprint = ?2
+        ORDER BY id
+        "#,
+    )?;
+    let symbols = statement
+        .query_map(params![repository_id, ast_fingerprint], row_to_symbol)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(if symbols.len() == 1 {
+        symbols.into_iter().next()
+    } else {
+        None
+    })
+}
+
+fn clean_collection_title(title: &str) -> String {
+    let clean = title.trim().chars().take(80).collect::<String>();
+    if clean.is_empty() {
+        "새 컬렉션".to_owned()
+    } else {
+        clean
+    }
+}
+
+fn tags_json(tags: &[String]) -> rusqlite::Result<String> {
+    serde_json::to_string(tags)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
 
 fn insert_symbol(
@@ -967,6 +2010,26 @@ fn insert_edge(
     Ok(())
 }
 
+fn insert_analysis_source_file(
+    transaction: &rusqlite::Transaction<'_>,
+    analysis_run_id: i64,
+    source_file: &AnalyzedSourceFile,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        r#"
+        INSERT INTO analysis_source_files (
+          analysis_run_id, relative_path, content_fingerprint
+        ) VALUES (?1, ?2, ?3)
+        "#,
+        params![
+            analysis_run_id,
+            source_file.relative_path,
+            source_file.content_fingerprint,
+        ],
+    )?;
+    Ok(())
+}
+
 fn confidence_label(confidence: &EdgeConfidence) -> &'static str {
     confidence.as_str()
 }
@@ -1019,6 +2082,85 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
         updated_at: row.get(5)?,
         status: row.get(6)?,
     })
+}
+
+fn row_to_collection_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollectionSummary> {
+    let tags_json: String = row.get(4)?;
+    let tags = serde_json::from_str(&tags_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let item_count = row.get::<_, i64>(6)?;
+    let orphan_count = row.get::<_, Option<i64>>(7)?.unwrap_or(0);
+    let changed_count = row.get::<_, Option<i64>>(8)?.unwrap_or(0);
+    Ok(CollectionSummary {
+        id: row.get(0)?,
+        repository_id: row.get(1)?,
+        title: row.get(2)?,
+        overview_markdown: row.get(3)?,
+        tags,
+        created_revision: row.get(5)?,
+        item_count: usize::try_from(item_count).unwrap_or(0),
+        orphan_count: usize::try_from(orphan_count).unwrap_or(0),
+        changed_count: usize::try_from(changed_count).unwrap_or(0),
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn row_to_collection_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollectionItem> {
+    let status = row.get::<_, String>(12)?;
+    let current_symbol_id = row.get::<_, Option<String>>(18)?;
+    let symbol = match current_symbol_id {
+        Some(id) => Some(IndexedSymbol {
+            id,
+            language: source_language_from_str(&row.get::<_, String>(19)?)?,
+            kind: row.get(20)?,
+            fqn: row.get(21)?,
+            signature: row.get(22)?,
+            relative_path: row.get(23)?,
+            start_line: row.get(24)?,
+            end_line: row.get(25)?,
+            ast_fingerprint: row.get(26)?,
+        }),
+        None => None,
+    };
+    let captured_fingerprint = row.get::<_, String>(9)?;
+    let is_changed = status == "linked"
+        && symbol
+            .as_ref()
+            .is_some_and(|symbol| symbol.ast_fingerprint != captured_fingerprint);
+    Ok(CollectionItem {
+        id: row.get(0)?,
+        collection_id: row.get(1)?,
+        repository_id: row.get(2)?,
+        symbol_id: row.get(3)?,
+        symbol_fqn: row.get(4)?,
+        symbol_signature: row.get(5)?,
+        relative_path: row.get(6)?,
+        start_line: row.get(7)?,
+        end_line: row.get(8)?,
+        ast_fingerprint: captured_fingerprint,
+        role: row.get(10)?,
+        memo: row.get(11)?,
+        status,
+        sort_order: row.get(13)?,
+        added_revision: row.get(14)?,
+        reviewed_at: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+        symbol,
+        is_changed,
+    })
+}
+
+fn source_language_from_str(language: &str) -> rusqlite::Result<crate::analysis::SourceLanguage> {
+    match language {
+        "java" => Ok(crate::analysis::SourceLanguage::Java),
+        "php" => Ok(crate::analysis::SourceLanguage::Php),
+        "python" => Ok(crate::analysis::SourceLanguage::Python),
+        "typescript" => Ok(crate::analysis::SourceLanguage::TypeScript),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
 }
 
 fn row_to_workspace_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceSnapshot> {
@@ -1272,6 +2414,31 @@ mod tests {
         }
     }
 
+    fn repository_analysis_from_source(
+        language: SourceLanguage,
+        relative_path: &str,
+        source: &str,
+    ) -> RepositoryAnalysis {
+        let file = analyze_file(language, relative_path, source).expect("source analyzes");
+        RepositoryAnalysis {
+            source_file_count: 1,
+            source_files: Vec::new(),
+            edges: resolve_calls(&file.symbols, &file.calls),
+            symbols: file.symbols,
+            diagnostics: file.diagnostics,
+        }
+    }
+
+    fn symbol_id(analysis: &RepositoryAnalysis, fqn: &str) -> String {
+        analysis
+            .symbols
+            .iter()
+            .find(|symbol| symbol.fqn == fqn)
+            .unwrap_or_else(|| panic!("{fqn} symbol exists"))
+            .id
+            .clone()
+    }
+
     #[test]
     fn workspace_snapshot_save_is_atomic_and_keeps_the_preceding_valid_snapshot() {
         let (path, mut database) = registered_database("workspace-snapshot-atomic");
@@ -1433,6 +2600,312 @@ mod tests {
         assert_eq!(repository.head, "def456");
         assert!(repository.is_dirty);
         assert_eq!(database.list_repositories().unwrap().len(), 1);
+
+        drop(database);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn collections_support_crud_order_search_graph_ownership_and_reopen() {
+        let path = temporary_database_path("collections-crud");
+        let mut database = Database::open(&path).expect("database opens");
+        database
+            .upsert_repository(
+                "repo_collections",
+                &RepositorySnapshot {
+                    root_path: "/tmp/collections".into(),
+                    display_name: "collections".into(),
+                    branch: "main".into(),
+                    head: "abc123".into(),
+                    is_dirty: false,
+                },
+            )
+            .expect("repository inserts");
+        database
+            .upsert_repository(
+                "repo_other",
+                &RepositorySnapshot {
+                    root_path: "/tmp/collections-other".into(),
+                    display_name: "collections-other".into(),
+                    branch: "main".into(),
+                    head: "def456".into(),
+                    is_dirty: false,
+                },
+            )
+            .expect("other repository inserts");
+        let analysis = repository_analysis_from_source(
+            SourceLanguage::Python,
+            "flow.py",
+            "def start():\n    prepare()\n\ndef prepare():\n    finish()\n\ndef finish():\n    return None\n",
+        );
+        let start_id = symbol_id(&analysis, "flow.start");
+        let prepare_id = symbol_id(&analysis, "flow.prepare");
+        let finish_id = symbol_id(&analysis, "flow.finish");
+        database
+            .replace_analysis("repo_collections", "abc123", &analysis)
+            .expect("analysis persists");
+
+        let created = database
+            .create_collection(
+                "repo_collections",
+                "가입 플로우",
+                "가입 기능의 핵심 흐름입니다.",
+                &["onboarding".into()],
+            )
+            .expect("collection creates");
+        assert_eq!(created.collection.item_count, 0);
+        let collection_id = created.collection.id;
+        let with_start = database
+            .add_collection_item(
+                "repo_collections",
+                collection_id,
+                &start_id,
+                "진입점",
+                "사용자가 처음 만나는 함수",
+            )
+            .expect("start item adds");
+        let with_prepare = database
+            .add_collection_item(
+                "repo_collections",
+                collection_id,
+                &prepare_id,
+                "전처리",
+                "검증을 준비합니다.",
+            )
+            .expect("prepare item adds");
+        assert_eq!(with_prepare.collection.item_count, 2);
+        let start_item = with_start.items[0].id;
+        let prepare_item = with_prepare
+            .items
+            .iter()
+            .find(|item| item.symbol_id.as_deref() == Some(&prepare_id))
+            .expect("prepare item")
+            .id;
+
+        let updated = database
+            .update_collection(
+                "repo_collections",
+                collection_id,
+                "가입 기능",
+                "가입과 검증을 함께 살핍니다.",
+                &["회원".into(), "핵심".into()],
+            )
+            .expect("collection updates");
+        assert_eq!(updated.collection.title, "가입 기능");
+        let edited_item = database
+            .update_collection_item(
+                "repo_collections",
+                collection_id,
+                start_item,
+                "엔트리",
+                "memo searchable",
+            )
+            .expect("item updates");
+        assert_eq!(edited_item.role, "엔트리");
+
+        let reordered = database
+            .reorder_collection_items(
+                "repo_collections",
+                collection_id,
+                &[prepare_item, start_item],
+            )
+            .expect("items reorder");
+        assert_eq!(reordered.items[0].id, prepare_item);
+        assert!(database
+            .reorder_collection_items(
+                "repo_collections",
+                collection_id,
+                &[prepare_item, prepare_item]
+            )
+            .is_err());
+        assert!(database
+            .reorder_collection_items("repo_collections", collection_id, &[prepare_item])
+            .is_err());
+
+        let graph = database
+            .collection_graph("repo_collections", collection_id)
+            .expect("collection graph loads");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].source, start_id);
+        assert_eq!(graph.edges[0].target.as_deref(), Some(prepare_id.as_str()));
+        assert!(!graph
+            .edges
+            .iter()
+            .any(|edge| edge.target.as_deref() == Some(finish_id.as_str())));
+
+        assert_eq!(
+            database
+                .search_collections("repo_collections", "memo searchable")
+                .expect("memo search")
+                .len(),
+            1
+        );
+        assert_eq!(
+            database
+                .search_collections("repo_collections", "핵심")
+                .expect("tag search")
+                .len(),
+            1
+        );
+        assert!(database
+            .add_collection_item("repo_other", collection_id, &start_id, "", "")
+            .is_err());
+        assert!(database
+            .get_collection("repo_other", collection_id)
+            .expect("foreign collection lookup")
+            .is_none());
+
+        let removed = database
+            .remove_collection_item("repo_collections", collection_id, prepare_item)
+            .expect("item removes");
+        assert_eq!(removed.items.len(), 1);
+        drop(database);
+
+        let mut reopened = Database::open(&path).expect("database reopens");
+        let persisted = reopened
+            .get_collection("repo_collections", collection_id)
+            .expect("collection reads after reopen")
+            .expect("collection persisted");
+        assert_eq!(persisted.collection.title, "가입 기능");
+        assert_eq!(persisted.items.len(), 1);
+        reopened
+            .delete_collection("repo_collections", collection_id)
+            .expect("collection deletes");
+        assert!(reopened
+            .get_collection("repo_collections", collection_id)
+            .expect("deleted collection lookup")
+            .is_none());
+        drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn collection_items_relink_orphan_manual_relink_and_refresh_changed_state() {
+        let path = temporary_database_path("collections-relink");
+        let mut database = Database::open(&path).expect("database opens");
+        database
+            .upsert_repository(
+                "repo_relink",
+                &RepositorySnapshot {
+                    root_path: "/tmp/relink".into(),
+                    display_name: "relink".into(),
+                    branch: "main".into(),
+                    head: "abc123".into(),
+                    is_dirty: false,
+                },
+            )
+            .expect("repository inserts");
+        let first = repository_analysis_from_source(
+            SourceLanguage::Python,
+            "sample.py",
+            "def start():\n    return 1\n\ndef finish():\n    return None\n",
+        );
+        let start_id = symbol_id(&first, "sample.start");
+        database
+            .replace_analysis("repo_relink", "abc123", &first)
+            .expect("first analysis persists");
+        let collection = database
+            .create_collection("repo_relink", "검토", "", &[])
+            .expect("collection creates");
+        let collection_id = collection.collection.id;
+        let detail = database
+            .add_collection_item("repo_relink", collection_id, &start_id, "", "")
+            .expect("item adds");
+        let item_id = detail.items[0].id;
+
+        let modified = repository_analysis_from_source(
+            SourceLanguage::Python,
+            "sample.py",
+            "def start():\n    return 2\n\ndef finish():\n    return None\n",
+        );
+        database
+            .replace_analysis("repo_relink", "def456", &modified)
+            .expect("modified analysis persists");
+        let changed = database
+            .get_collection("repo_relink", collection_id)
+            .expect("changed collection reads")
+            .expect("changed collection exists");
+        assert!(changed.items[0].is_changed);
+        assert_eq!(changed.collection.changed_count, 1);
+
+        let reviewed = database
+            .mark_collection_item_reviewed("repo_relink", collection_id, item_id)
+            .expect("item review refreshes fingerprint");
+        assert!(!reviewed.is_changed);
+        assert!(reviewed.reviewed_at.is_some());
+
+        let renamed_same_body = repository_analysis_from_source(
+            SourceLanguage::Python,
+            "renamed.py",
+            "def start():\n    return 2\n",
+        );
+        let renamed_id = symbol_id(&renamed_same_body, "renamed.start");
+        database
+            .replace_analysis("repo_relink", "ghi789", &renamed_same_body)
+            .expect("renamed analysis persists");
+        let relinked = database
+            .get_collection("repo_relink", collection_id)
+            .expect("fingerprint relinked collection reads")
+            .expect("collection exists");
+        assert_eq!(relinked.items[0].status, "linked");
+        assert_eq!(
+            relinked.items[0].symbol_id.as_deref(),
+            Some(renamed_id.as_str())
+        );
+        assert_eq!(relinked.items[0].symbol_fqn, "renamed.start");
+        assert!(!relinked.items[0].is_changed);
+
+        let empty = RepositoryAnalysis {
+            source_file_count: 0,
+            source_files: Vec::new(),
+            symbols: Vec::new(),
+            edges: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        database
+            .replace_analysis("repo_relink", "jkl012", &empty)
+            .expect("empty analysis persists");
+        let orphaned = database
+            .get_collection("repo_relink", collection_id)
+            .expect("orphaned collection reads")
+            .expect("collection exists");
+        assert_eq!(orphaned.items[0].status, "orphan");
+        assert!(orphaned.items[0].symbol_id.is_none());
+
+        let replacement = repository_analysis_from_source(
+            SourceLanguage::Python,
+            "replacement.py",
+            "def finish():\n    return None\n",
+        );
+        let finish_id = symbol_id(&replacement, "replacement.finish");
+        database
+            .replace_analysis("repo_relink", "mno345", &replacement)
+            .expect("replacement analysis persists");
+        let with_duplicate_target = database
+            .add_collection_item("repo_relink", collection_id, &finish_id, "other", "")
+            .expect("duplicate target item adds");
+        let duplicate_target_item_id = with_duplicate_target
+            .items
+            .iter()
+            .find(|item| item.id != item_id)
+            .expect("duplicate target item")
+            .id;
+        assert!(database
+            .relink_collection_item("repo_relink", collection_id, item_id, &finish_id)
+            .is_err());
+        database
+            .remove_collection_item("repo_relink", collection_id, duplicate_target_item_id)
+            .expect("duplicate target item removes");
+        let manually_relinked = database
+            .relink_collection_item("repo_relink", collection_id, item_id, &finish_id)
+            .expect("manual relink succeeds");
+        assert_eq!(manually_relinked.status, "linked");
+        assert_eq!(
+            manually_relinked.symbol_id.as_deref(),
+            Some(finish_id.as_str())
+        );
+        assert!(!manually_relinked.is_changed);
 
         drop(database);
         let _ = fs::remove_file(path);
@@ -1616,6 +3089,7 @@ mod tests {
         .expect("PHP source analyzes");
         let analysis = RepositoryAnalysis {
             source_file_count: 1,
+            source_files: Vec::new(),
             edges: resolve_calls(&file.symbols, &file.calls),
             symbols: file.symbols,
             diagnostics: file.diagnostics,
@@ -1666,6 +3140,7 @@ mod tests {
             .clone();
         let analysis = RepositoryAnalysis {
             source_file_count: 1,
+            source_files: Vec::new(),
             edges: resolve_calls(&file.symbols, &file.calls),
             symbols: file.symbols,
             diagnostics: file.diagnostics,
@@ -1742,6 +3217,7 @@ mod tests {
 
         let deleted_analysis = RepositoryAnalysis {
             source_file_count: 0,
+            source_files: Vec::new(),
             symbols: Vec::new(),
             edges: Vec::new(),
             diagnostics: Vec::new(),
@@ -1772,6 +3248,7 @@ mod tests {
             .clone();
         let moved_analysis = RepositoryAnalysis {
             source_file_count: 1,
+            source_files: Vec::new(),
             edges: resolve_calls(&moved_file.symbols, &moved_file.calls),
             symbols: moved_file.symbols,
             diagnostics: moved_file.diagnostics,
@@ -1807,6 +3284,7 @@ mod tests {
             .clone();
         let java_analysis = RepositoryAnalysis {
             source_file_count: 1,
+            source_files: Vec::new(),
             edges: resolve_calls(&java_file.symbols, &java_file.calls),
             symbols: java_file.symbols,
             diagnostics: java_file.diagnostics,
@@ -1843,6 +3321,7 @@ mod tests {
             .clone();
         let moved_java_analysis = RepositoryAnalysis {
             source_file_count: 1,
+            source_files: Vec::new(),
             edges: resolve_calls(&moved_java_file.symbols, &moved_java_file.calls),
             symbols: moved_java_file.symbols,
             diagnostics: moved_java_file.diagnostics,
