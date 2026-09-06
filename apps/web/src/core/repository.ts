@@ -4,6 +4,9 @@ import type { BrowserRepositoryInput, BrowserSourceFile } from "./types";
 type BrowserDirectoryHandle = FileSystemDirectoryHandle & AsyncIterable<[string, FileSystemHandle]>;
 type DirectoryPicker = () => Promise<BrowserDirectoryHandle>;
 
+const MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_SOURCE_FILE_COUNT = 5_000;
+
 declare global {
   interface Window {
     showDirectoryPicker?: DirectoryPicker;
@@ -32,6 +35,7 @@ export async function filesFromFileList(fileList: File[] | FileList): Promise<Br
   const files = Array.from(fileList);
   const loaded: BrowserSourceFile[] = [];
   for (const file of files) {
+    if (loaded.length >= MAX_SOURCE_FILE_COUNT || file.size > MAX_SOURCE_FILE_BYTES) continue;
     const relativePath = normalizeRelativePath((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
     const language = languageFromPath(relativePath);
     if (!language || isExcludedPath(relativePath)) continue;
@@ -40,21 +44,27 @@ export async function filesFromFileList(fileList: File[] | FileList): Promise<Br
   return loaded.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }
 
-export async function enumerateDirectory(handle: BrowserDirectoryHandle, prefix = ""): Promise<BrowserSourceFile[]> {
+export async function enumerateDirectory(
+  handle: BrowserDirectoryHandle,
+  prefix = "",
+  budget = { remaining: MAX_SOURCE_FILE_COUNT },
+): Promise<BrowserSourceFile[]> {
   const files: BrowserSourceFile[] = [];
   for await (const [name, child] of handle) {
+    if (budget.remaining <= 0) break;
     const relativePath = normalizeRelativePath(`${prefix}${name}`);
     if (child.kind === "directory") {
       if (!isExcludedPath(relativePath)) {
-        files.push(...(await enumerateDirectory(child as BrowserDirectoryHandle, `${relativePath}/`)));
+        files.push(...(await enumerateDirectory(child as BrowserDirectoryHandle, `${relativePath}/`, budget)));
       }
       continue;
     }
     const language = languageFromPath(relativePath);
     if (!language || isExcludedPath(relativePath)) continue;
     const file = await (child as FileSystemFileHandle).getFile();
+    if (file.size > MAX_SOURCE_FILE_BYTES) continue;
+    budget.remaining -= 1;
     files.push({ relativePath, language, source: await file.text() });
   }
   return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }
-

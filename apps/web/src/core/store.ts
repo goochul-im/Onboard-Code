@@ -53,6 +53,7 @@ export class WorkerBrowserAnalyzer implements BrowserAnalyzer {
 export class BrowserWorkspace {
   private state: BrowserPersistedState = structuredClone(emptyPersistedState);
   private sourceFiles = new Map<string, BrowserSourceFile>();
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly analyzer: BrowserAnalyzer = new WorkerBrowserAnalyzer(),
@@ -65,7 +66,7 @@ export class BrowserWorkspace {
   }
 
   async save(): Promise<void> {
-    await this.persistence.save(this.state);
+    await this.queueSave(true);
   }
 
   snapshot(): BrowserPersistedState {
@@ -144,35 +145,38 @@ export class BrowserWorkspace {
     return this.state.notes.filter((note) => note.symbolId === symbolId).map((note) => ({ ...note, status: this.findSymbolOrNull(note.symbolId) ? "linked" : "orphan" }));
   }
 
-  createNote(symbolId: string, title: string): NoteRecord {
+  async createNote(symbolId: string, title: string, bodyMarkdown = "", tags: string[] = []): Promise<NoteRecord> {
     this.findSymbol(symbolId);
+    if (this.state.notes.some((note) => note.symbolId === symbolId)) {
+      throw new Error("이 함수에는 이미 웹 노트가 있습니다.");
+    }
     const now = new Date().toISOString();
     const note: NoteRecord = {
       id: this.state.counters.noteId++,
       symbolId,
       title,
-      bodyMarkdown: "",
-      tags: [],
+      bodyMarkdown,
+      tags,
       updatedAt: now,
       status: "linked",
     };
     this.state.notes.push(note);
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return structuredClone(note);
   }
 
-  updateNote(noteId: number, patch: { title: string; bodyMarkdown: string; tags: string[] }): NoteRecord {
+  async updateNote(noteId: number, patch: { title: string; bodyMarkdown: string; tags: string[] }): Promise<NoteRecord> {
     const note = this.state.notes.find((item) => item.id === noteId);
     if (!note) throw new Error("노트를 찾을 수 없습니다.");
     note.title = patch.title;
     note.bodyMarkdown = patch.bodyMarkdown;
     note.tags = patch.tags;
     note.updatedAt = new Date().toISOString();
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return structuredClone(note);
   }
 
-  createCollection(title: string, overviewMarkdown = "", tags: string[] = []): BrowserCollectionDetail {
+  async createCollection(title: string, overviewMarkdown = "", tags: string[] = []): Promise<BrowserCollectionDetail> {
     const repositoryId = this.requireIndex().repository.id;
     const now = new Date().toISOString();
     const collection: BrowserCollectionSummary = {
@@ -189,24 +193,29 @@ export class BrowserWorkspace {
       updatedAt: now,
     };
     this.state.collections.push(collection);
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return { collection: structuredClone(collection), items: [] };
   }
 
   listCollections(): BrowserCollectionSummary[] {
-    return this.state.collections.map((collection) => this.refreshCollectionSummary(collection.id));
+    const repositoryId = this.state.index?.repository.id;
+    if (!repositoryId) return [];
+    return this.state.collections
+      .filter((collection) => collection.repositoryId === repositoryId)
+      .map((collection) => this.refreshCollectionSummary(collection.id));
   }
 
-  deleteCollection(collectionId: number): void {
+  async deleteCollection(collectionId: number): Promise<void> {
+    this.requireActiveCollection(collectionId);
     this.state.collections = this.state.collections.filter((item) => item.id !== collectionId);
     this.state.collectionItems = this.state.collectionItems.filter((item) => item.collectionId !== collectionId);
     if (this.state.workspace.selectedCollectionId === collectionId) this.state.workspace.selectedCollectionId = null;
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
   }
 
   getCollection(collectionId: number): BrowserCollectionDetail | null {
     const collection = this.state.collections.find((item) => item.id === collectionId);
-    if (!collection) return null;
+    if (!collection || collection.repositoryId !== this.state.index?.repository.id) return null;
     return {
       collection: this.refreshCollectionSummary(collection.id),
       items: this.state.collectionItems
@@ -216,10 +225,12 @@ export class BrowserWorkspace {
     };
   }
 
-  addCollectionItem(collectionId: number, symbolId: string, role = "other", memo = ""): BrowserCollectionDetail {
-    const collection = this.state.collections.find((item) => item.id === collectionId);
-    if (!collection) throw new Error("컬렉션을 찾을 수 없습니다.");
+  async addCollectionItem(collectionId: number, symbolId: string, role = "other", memo = ""): Promise<BrowserCollectionDetail> {
+    const collection = this.requireActiveCollection(collectionId);
     const symbol = this.findSymbol(symbolId);
+    if (this.state.collectionItems.some((item) => item.collectionId === collectionId && item.symbolId === symbol.id)) {
+      throw new Error("이미 이 컬렉션에 들어 있는 함수입니다.");
+    }
     const now = new Date().toISOString();
     const item: BrowserCollectionItem = {
       id: this.state.counters.collectionItemId++,
@@ -243,34 +254,49 @@ export class BrowserWorkspace {
       isChanged: false,
     };
     this.state.collectionItems.push(item);
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return this.getCollection(collectionId) as BrowserCollectionDetail;
   }
 
-  updateCollectionItem(collectionId: number, itemId: number, patch: { role?: string; memo?: string }): BrowserCollectionItem {
+  async updateCollectionItem(collectionId: number, itemId: number, patch: { role?: string; memo?: string }): Promise<BrowserCollectionItem> {
+    this.requireActiveCollection(collectionId);
     const item = this.state.collectionItems.find((candidate) => candidate.collectionId === collectionId && candidate.id === itemId);
     if (!item) throw new Error("컬렉션 항목을 찾을 수 없습니다.");
     if (patch.role) item.role = patch.role;
     if (patch.memo !== undefined) item.memo = patch.memo;
     item.updatedAt = new Date().toISOString();
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return this.relinkedItem(item);
   }
 
-  reorderCollectionItems(collectionId: number, itemIds: number[]): BrowserCollectionDetail {
+  async reorderCollectionItems(collectionId: number, itemIds: number[]): Promise<BrowserCollectionDetail> {
+    this.requireActiveCollection(collectionId);
+    const existingIds = this.state.collectionItems
+      .filter((item) => item.collectionId === collectionId)
+      .map((item) => item.id);
+    if (new Set(itemIds).size !== itemIds.length
+      || itemIds.length !== existingIds.length
+      || existingIds.some((id) => !itemIds.includes(id))) {
+      throw new Error("컬렉션의 모든 항목을 중복 없이 전달해야 합니다.");
+    }
     const requested = new Map(itemIds.map((id, index) => [id, index]));
     for (const item of this.state.collectionItems.filter((item) => item.collectionId === collectionId)) {
       const nextOrder = requested.get(item.id);
       if (nextOrder !== undefined) item.sortOrder = nextOrder;
     }
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return this.getCollection(collectionId) as BrowserCollectionDetail;
   }
 
-  relinkCollectionItem(collectionId: number, itemId: number, symbolId: string): BrowserCollectionItem {
+  async relinkCollectionItem(collectionId: number, itemId: number, symbolId: string): Promise<BrowserCollectionItem> {
+    this.requireActiveCollection(collectionId);
     const item = this.state.collectionItems.find((candidate) => candidate.collectionId === collectionId && candidate.id === itemId);
     if (!item) throw new Error("컬렉션 항목을 찾을 수 없습니다.");
     const symbol = this.findSymbol(symbolId);
+    if (this.state.collectionItems.some((candidate) =>
+      candidate.collectionId === collectionId && candidate.id !== itemId && candidate.symbolId === symbol.id)) {
+      throw new Error("선택한 함수는 이미 이 컬렉션에 연결되어 있습니다.");
+    }
     Object.assign(item, {
       symbolId: symbol.id,
       symbolFqn: symbol.fqn,
@@ -284,17 +310,18 @@ export class BrowserWorkspace {
       isChanged: false,
       updatedAt: new Date().toISOString(),
     });
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return this.relinkedItem(item);
   }
 
-  markCollectionItemReviewed(collectionId: number, itemId: number): BrowserCollectionItem {
+  async markCollectionItemReviewed(collectionId: number, itemId: number): Promise<BrowserCollectionItem> {
+    this.requireActiveCollection(collectionId);
     const item = this.state.collectionItems.find((candidate) => candidate.collectionId === collectionId && candidate.id === itemId);
     if (!item) throw new Error("컬렉션 항목을 찾을 수 없습니다.");
     item.reviewedAt = new Date().toISOString();
     item.astFingerprint = item.symbol?.astFingerprint ?? item.astFingerprint;
     item.isChanged = false;
-    void this.saveIfAvailable();
+    await this.saveIfAvailable();
     return this.relinkedItem(item);
   }
 
@@ -316,14 +343,15 @@ export class BrowserWorkspace {
   private repositoryRecord(input: BrowserRepositoryInput): BrowserRepositoryRecord {
     const now = new Date().toISOString();
     const contentFingerprint = stableHash(input.files.map((file) => `${file.relativePath}:${stableHash(file.source)}`).join("|"));
+    const id = input.id ?? `browser:${stableHash(input.displayName)}`;
     return {
-      id: input.id ?? `browser:${stableHash(input.displayName)}`,
+      id,
       rootPath: input.rootPath ?? input.displayName,
       displayName: input.displayName,
       branch: "browser",
       head: contentFingerprint,
       isDirty: false,
-      createdAt: this.state.index?.repository.createdAt ?? now,
+      createdAt: this.state.index?.repository.id === id ? this.state.index.repository.createdAt : now,
       updatedAt: now,
       runtime: "browser",
     };
@@ -348,12 +376,22 @@ export class BrowserWorkspace {
     return this.state.index?.symbols.find((symbol) => symbol.id === symbolId) ?? null;
   }
 
+  private requireActiveCollection(collectionId: number): BrowserCollectionSummary {
+    const collection = this.state.collections.find((item) => item.id === collectionId);
+    if (!collection || collection.repositoryId !== this.state.index?.repository.id) {
+      throw new Error("현재 저장소의 컬렉션을 찾을 수 없습니다.");
+    }
+    return collection;
+  }
+
   private relinkStoredItems(): void {
     this.state.collectionItems = this.state.collectionItems.map((item) => this.relinkedItem(item));
   }
 
   private relinkedItem(item: BrowserCollectionItem): BrowserCollectionItem {
-    const symbol = item.symbolId ? this.findSymbolOrNull(item.symbolId) : null;
+    const symbol = item.repositoryId === this.state.index?.repository.id && item.symbolId
+      ? this.findSymbolOrNull(item.symbolId)
+      : null;
     return {
       ...item,
       symbol,
@@ -375,7 +413,21 @@ export class BrowserWorkspace {
   }
 
   private async saveIfAvailable(): Promise<void> {
-    if (await this.persistence.isAvailable()) await this.persistence.save(this.state);
+    await this.queueSave(false);
+  }
+
+  private async queueSave(requirePersistence: boolean): Promise<void> {
+    const snapshot = this.snapshot();
+    const nextSave = this.saveQueue.catch(() => undefined).then(async () => {
+      const available = await this.persistence.isAvailable();
+      if (!available) {
+        if (requirePersistence) throw new Error("이 브라우저는 OPFS 저장소를 지원하지 않습니다.");
+        return;
+      }
+      await this.persistence.save(snapshot);
+    });
+    this.saveQueue = nextSave;
+    await nextSave;
   }
 }
 

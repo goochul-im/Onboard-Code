@@ -28,13 +28,14 @@ https://onboardcode.app/
 
 ## Custom domain checklist
 
-`apps/web/public/CNAME` is copied into the build artifact and contains only:
+Register and verify the domain before adding `apps/web/public/CNAME`. Once the
+domain is owned and its DNS is ready, that file must contain only:
 
 ```text
 onboardcode.app
 ```
 
-The repository's Pages settings must also set `onboardcode.app` as the custom
+The repository's Pages settings must then set `onboardcode.app` as the custom
 domain. DNS is configured outside this repository.
 
 For the apex domain, configure either an `ALIAS`/`ANAME` to the default Pages
@@ -70,7 +71,7 @@ or analysis results. `npm run privacy:audit` checks the built `dist` output for:
 - `sendBeacon` usage and absolute remote `fetch(...)`, XHR, WebSocket,
   EventSource, or `importScripts(...)` endpoints
 - required local PWA and WebAssembly assets
-- `CNAME` containing only `onboardcode.app`
+- when a verified custom domain is enabled, `CNAME` containing only `onboardcode.app`
 
 The audit intentionally scans published assets rather than source maps,
 lockfiles, or dependencies that are not served to users. `web-tree-sitter`
@@ -82,13 +83,15 @@ that local asset loading is allowed.
 The web build must surface browser-only limits in hover help instead of reducing
 desktop behavior. The main limitations are:
 
-- the user must choose a local folder in a browser that supports the File System
-  Access API
+- Chrome and Edge can use the native folder picker; other browsers can use the
+  file-input fallback when directory selection is available
 - the PWA cannot open arbitrary absolute paths on its own
-- Git metadata is limited to files the browser grants access to
+- Git branch, commit, dirty-state, and change-impact features are unavailable in
+  the browser build
 - OPFS and IndexedDB state belong to the current browser profile and may be
   cleared by browser storage settings
-- large repositories depend on browser memory, CPU, and storage quotas
+- analysis is capped at 5,000 supported source files and 2 MB per file to
+  protect browser memory
 
 The desktop app remains the full local app and must not inherit these web-only
 limitations.

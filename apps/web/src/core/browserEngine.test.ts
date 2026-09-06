@@ -30,6 +30,16 @@ class MemoryPersistence {
   }
 }
 
+class RejectingPersistence extends MemoryPersistence {
+  private saves = 0;
+
+  override async save(state: BrowserPersistedState): Promise<void> {
+    this.saves += 1;
+    if (this.saves > 1) throw new Error("quota exceeded");
+    return super.save(state);
+  }
+}
+
 const analyzer: BrowserAnalyzer = {
   async analyze(_files: BrowserSourceFile[]) {
     return {
@@ -65,6 +75,19 @@ describe("browser engine store", () => {
     expect(persistence.saved).not.toContain("do-not-persist");
     expect(persistence.saved).not.toContain("\"files\"");
     expect(persistence.saved).toContain("\"symbols\"");
+    expect(parseBrowserState(persistence.saved).index?.edges[0].source).toBe("alpha");
+
+    const restored = new BrowserWorkspace(analyzer, persistence);
+    await restored.load();
+    expect(restored.getGraph("alpha", 1).edges).toHaveLength(1);
+  });
+
+  it("rejects future state versions without rewriting them", () => {
+    expect(() => parseBrowserState(JSON.stringify({
+      kind: "onboardcode.browser.workspace",
+      version: 999,
+      data: {},
+    }))).toThrow("더 새로운 OnboardCode Web 형식");
   });
 
   it("creates collections and marks relinked symbols as changed after re-analysis", async () => {
@@ -76,13 +99,45 @@ describe("browser engine store", () => {
     };
     const workspace = new BrowserWorkspace(changingAnalyzer, new MemoryPersistence());
     await workspace.analyzeRepository({ displayName: "demo", files: [] });
-    const collection = workspace.createCollection("로그인").collection;
-    workspace.addCollectionItem(collection.id, "alpha", "entry", "진입점");
+    const collection = (await workspace.createCollection("로그인")).collection;
+    await workspace.addCollectionItem(collection.id, "alpha", "entry", "진입점");
 
     nextSymbols = [makeSymbol("alpha", "Feature.alpha", "hash-new")];
     await workspace.analyzeRepository({ displayName: "demo", files: [] });
 
     expect(workspace.getCollection(collection.id)?.items[0].isChanged).toBe(true);
+  });
+
+  it("keeps collections isolated from a different active repository", async () => {
+    const workspace = new BrowserWorkspace(analyzer, new MemoryPersistence());
+    await workspace.analyzeRepository({ id: "repo-a", displayName: "A", files: [] });
+    const collection = (await workspace.createCollection("A의 흐름")).collection;
+    await workspace.addCollectionItem(collection.id, "alpha");
+
+    await workspace.analyzeRepository({ id: "repo-b", displayName: "B", files: [] });
+
+    expect(workspace.listCollections()).toEqual([]);
+    expect(workspace.getCollection(collection.id)).toBeNull();
+    await expect(workspace.addCollectionItem(collection.id, "alpha")).rejects.toThrow("현재 저장소");
+  });
+
+  it("surfaces note persistence failures to the caller", async () => {
+    const workspace = new BrowserWorkspace(analyzer, new RejectingPersistence());
+    await workspace.analyzeRepository({ displayName: "demo", files: [] });
+    await expect(workspace.createNote("alpha", "note")).rejects.toThrow("quota exceeded");
+  });
+
+  it("keeps one web note per function", async () => {
+    const workspace = new BrowserWorkspace(analyzer, new MemoryPersistence());
+    await workspace.analyzeRepository({ displayName: "demo", files: [] });
+    await workspace.createNote("alpha", "first", "body", ["tag"]);
+
+    await expect(workspace.createNote("alpha", "second")).rejects.toThrow("이미 웹 노트");
+    expect(workspace.listNotes("alpha")[0]).toEqual(expect.objectContaining({
+      title: "first",
+      bodyMarkdown: "body",
+      tags: ["tag"],
+    }));
   });
 });
 
@@ -97,6 +152,11 @@ describe("browser file access helpers", () => {
     await expect(filesFromFileList(files)).resolves.toEqual([
       { relativePath: "src/index.ts", language: "typescript", source: "export function ok() {}" },
     ]);
+  });
+
+  it("skips source files larger than the documented browser limit", async () => {
+    const oversized = makeFile("src/huge.ts", "x".repeat(2 * 1024 * 1024 + 1));
+    await expect(filesFromFileList([oversized])).resolves.toEqual([]);
   });
 });
 

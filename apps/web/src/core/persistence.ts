@@ -43,6 +43,11 @@ export function serializeBrowserState(state: BrowserPersistedState): string {
 export function parseBrowserState(serialized: string): BrowserPersistedState {
   const raw = JSON.parse(serialized) as Partial<BrowserStateEnvelope> | BrowserPersistedState;
   if ("kind" in raw && raw.kind === "onboardcode.browser.workspace") {
+    if ((raw.version ?? 1) > BROWSER_STATE_VERSION) {
+      throw new Error(
+        `이 브라우저 데이터는 더 새로운 OnboardCode Web 형식(v${raw.version})입니다. 데이터를 보호하기 위해 현재 버전에서 열지 않았습니다.`,
+      );
+    }
     return migrateState(raw.version ?? 1, raw.data);
   }
   return migrateState(1, raw as Partial<BrowserPersistedState>);
@@ -94,12 +99,29 @@ function migrateState(version: number, data: Partial<BrowserPersistedState> | un
 }
 
 function stripSourceText(state: BrowserPersistedState): BrowserPersistedState {
-  return JSON.parse(
-    JSON.stringify(state, (key, value) => {
-      if (key === "source" || key === "files") return undefined;
-      return value;
-    }),
-  ) as BrowserPersistedState;
+  const clone = structuredClone(state) as BrowserPersistedState & Record<string, unknown>;
+  removeRawFilePayloads(clone);
+  return clone;
+}
+
+function removeRawFilePayloads(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(removeRawFilePayloads);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  const looksLikeRawSourceFile = typeof record.relativePath === "string"
+    && typeof record.source === "string"
+    && typeof record.fqn !== "string";
+  if (looksLikeRawSourceFile) delete record.source;
+
+  if (Array.isArray(record.files)
+    && record.files.some((file) => file && typeof file === "object" && "source" in file)) {
+    delete record.files;
+  }
+  Object.values(record).forEach(removeRawFilePayloads);
 }
 
 type OpfsDirectoryHandle = FileSystemDirectoryHandle & {
@@ -112,4 +134,3 @@ async function getOpfsRoot(): Promise<OpfsDirectoryHandle> {
   };
   return storage.getDirectory();
 }
-

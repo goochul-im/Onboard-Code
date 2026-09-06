@@ -80,7 +80,6 @@ export function CallGraph({ graph, selectedSymbolId, onSelectSymbol }: CallGraph
           { selector: "edge.ambiguous", style: { "line-style": "dashed", "line-color": "#f2bd5f", "target-arrow-color": "#f2bd5f" } },
         ],
         layout: { name: "breadthfirst", directed: true, padding: 28, spacingFactor: 1.08, animate: false },
-        wheelSensitivity: 0.18,
       });
       instance.on("tap", "node", (event) => selectSymbol.current(event.target.id()));
     });

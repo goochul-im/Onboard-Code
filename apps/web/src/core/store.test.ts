@@ -10,10 +10,12 @@ describe("BrowserWorkspace collections", () => {
       files: [{ relativePath: "src/a.ts", language: "typescript", source: "" }],
     });
 
-    const collection = workspace.createCollection("로그인 흐름");
-    workspace.addCollectionItem(collection.collection.id, "alpha", "entry", "진입점");
-    workspace.addCollectionItem(collection.collection.id, "beta", "core", "핵심 처리");
-    workspace.reorderCollectionItems(collection.collection.id, [2, 1]);
+    const collection = await workspace.createCollection("로그인 흐름");
+    await workspace.addCollectionItem(collection.collection.id, "alpha", "entry", "진입점");
+    await workspace.addCollectionItem(collection.collection.id, "beta", "core", "핵심 처리");
+    await expect(workspace.addCollectionItem(collection.collection.id, "alpha")).rejects.toThrow("이미");
+    await expect(workspace.reorderCollectionItems(collection.collection.id, [1, 1])).rejects.toThrow("중복 없이");
+    await workspace.reorderCollectionItems(collection.collection.id, [2, 1]);
 
     const detail = workspace.getCollection(collection.collection.id);
     const graph = workspace.getCollectionGraph(collection.collection.id);

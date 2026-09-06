@@ -50,6 +50,7 @@ export default function App() {
   const [fallbackSource, setFallbackSource] = useState(sampleSource);
   const [collectionTitle, setCollectionTitle] = useState("");
   const [collectionQuery, setCollectionQuery] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     void workspace.load().then((state) => {
@@ -57,6 +58,8 @@ export default function App() {
       setSelectedId(state.workspace.selectedSymbolId ?? state.index?.symbols[0]?.id ?? null);
       setDepth(state.workspace.graphDepth);
       refreshCollections(state.workspace.selectedCollectionId ?? null);
+    }).catch((error) => {
+      setStatus(`저장된 브라우저 데이터를 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [workspace]);
 
@@ -80,6 +83,8 @@ export default function App() {
     `${collection.title} ${collection.tags.join(" ")}`.toLowerCase().includes(collectionQuery.toLowerCase()),
   );
   const activeCollection = collectionDetail ?? (visibleCollections[0] ? workspace.getCollection(visibleCollections[0].id) : null);
+  const selectedAlreadyIncluded = Boolean(selectedId
+    && activeCollection?.items.some((item) => item.symbolId === selectedId));
   const collectionGraph = useMemo(() => safeCollectionGraph(workspace, activeCollection?.collection.id ?? null), [workspace, activeCollection?.collection.id, index]);
 
   async function analyzeRepository(input: { displayName: string; files: BrowserSourceFile[] }) {
@@ -87,13 +92,20 @@ export default function App() {
       setStatus("지원되는 소스 파일을 찾지 못했습니다.");
       return;
     }
+    setAnalyzing(true);
     setStatus("브라우저 WASM worker로 분석 중입니다...");
-    const summary = await workspace.analyzeRepository({ displayName: input.displayName, files: input.files });
-    const currentIndex = workspace.currentIndex();
-    setIndex(currentIndex);
-    setSelectedId(currentIndex?.symbols[0]?.id ?? null);
-    refreshCollections(activeCollection?.collection.id ?? null);
-    setStatus(`${summary.sourceFileCount}개 파일, ${summary.symbolCount}개 함수, ${summary.edgeCount}개 호출 관계를 분석했습니다.`);
+    try {
+      const summary = await workspace.analyzeRepository({ displayName: input.displayName, files: input.files });
+      const currentIndex = workspace.currentIndex();
+      setIndex(currentIndex);
+      setSelectedId(currentIndex?.symbols[0]?.id ?? null);
+      refreshCollections(activeCollection?.collection.id ?? null);
+      setStatus(`${summary.sourceFileCount}개 파일, ${summary.symbolCount}개 함수, ${summary.edgeCount}개 호출 관계를 분석했습니다.`);
+    } catch (error) {
+      setStatus(`분석하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAnalyzing(false);
+    }
   }
 
   async function handleDirectoryPick() {
@@ -122,19 +134,29 @@ export default function App() {
   function refreshCollections(preferredId: number | null) {
     const list = workspace.listCollections();
     setCollections(list);
-    const nextId = preferredId ?? list[0]?.id ?? null;
+    const nextId = preferredId && list.some((collection) => collection.id === preferredId)
+      ? preferredId
+      : list[0]?.id ?? null;
     setCollectionDetail(nextId ? workspace.getCollection(nextId) : null);
   }
 
-  function saveCurrentNote(title: string, bodyMarkdown: string, tags: string) {
+  async function saveCurrentNote(title: string, bodyMarkdown: string, tags: string) {
     if (!selectedId) return;
     const tagList = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
-    if (note?.id) workspace.updateNote(note.id, { title, bodyMarkdown, tags: tagList });
-    else {
-      const created = workspace.createNote(selectedId, title || selectedSymbol?.fqn.split(".").at(-1) || "노트");
-      workspace.updateNote(created.id!, { title: title || created.title, bodyMarkdown, tags: tagList });
+    try {
+      if (note?.id) await workspace.updateNote(note.id, { title, bodyMarkdown, tags: tagList });
+      else {
+        await workspace.createNote(
+          selectedId,
+          title || selectedSymbol?.fqn.split(".").at(-1) || "노트",
+          bodyMarkdown,
+          tagList,
+        );
+      }
+      setStatus("노트를 저장했습니다.");
+    } catch (error) {
+      setStatus(`노트를 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
     }
-    setStatus("노트를 저장했습니다.");
   }
 
   return (
@@ -172,10 +194,10 @@ export default function App() {
                 <span>선택한 폴더의 Java, Python, PHP, TypeScript 파일을 브라우저 WASM worker에서 읽고 함수 목록과 호출 후보를 만듭니다.</span>
               </Tooltip>
             </div>
-            <button className="primary-action" type="button" onClick={handleDirectoryPick} disabled={!browserFileAccessSupported()}>
-              폴더 열기
+            <button className="primary-action" type="button" onClick={handleDirectoryPick} disabled={!browserFileAccessSupported() || analyzing}>
+              {analyzing ? "분석 중…" : "폴더 열기"}
             </button>
-            <button className="secondary-action" type="button" onClick={() => fileInput.current?.click()}>
+            <button className="secondary-action" type="button" onClick={() => fileInput.current?.click()} disabled={analyzing}>
               파일로 열기
             </button>
             <input ref={fileInput} className="hidden-input" type="file" multiple webkitdirectory="" onChange={(event) => void handleFallbackInput(event.currentTarget.files)} />
@@ -187,7 +209,7 @@ export default function App() {
               붙여넣기 코드
               <textarea value={fallbackSource} onChange={(event) => setFallbackSource(event.target.value)} rows={8} />
             </label>
-            <button className="secondary-action" type="button" onClick={() => void handlePasteAnalysis()}>
+            <button className="secondary-action" type="button" onClick={() => void handlePasteAnalysis()} disabled={analyzing}>
               붙여넣기 분석
             </button>
             <div className="language-list">
@@ -244,14 +266,31 @@ export default function App() {
             <h2>컬렉션</h2>
             <div className="inline-form">
               <input aria-label="컬렉션 이름" placeholder="기능 이름" value={collectionTitle} onChange={(event) => setCollectionTitle(event.target.value)} />
-              <button type="button" onClick={() => { workspace.createCollection(collectionTitle || "새 컬렉션"); setCollectionTitle(""); refreshCollections(null); }}>생성</button>
+              <button type="button" onClick={() => void (async () => {
+                try {
+                  await workspace.createCollection(collectionTitle || "새 컬렉션");
+                  setCollectionTitle("");
+                  refreshCollections(null);
+                } catch (error) {
+                  setStatus(`컬렉션을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+                }
+              })()}>생성</button>
             </div>
             <input className="collection-search" aria-label="컬렉션 검색" placeholder="컬렉션 검색" value={collectionQuery} onChange={(event) => setCollectionQuery(event.target.value)} />
             {visibleCollections.map((collection) => (
               <div key={collection.id} className="collection-row">
                 <button type="button" onClick={() => setCollectionDetail(workspace.getCollection(collection.id))}>{collection.title}</button>
                 <small>{collection.itemCount}개</small>
-                <button type="button" onClick={() => { workspace.deleteCollection(collection.id); refreshCollections(null); }}>삭제</button>
+                <button type="button" onClick={() => void (async () => {
+                  if (window.confirm(`${collection.title} 컬렉션을 삭제할까요?`)) {
+                    try {
+                      await workspace.deleteCollection(collection.id);
+                      refreshCollections(null);
+                    } catch (error) {
+                      setStatus(`컬렉션을 삭제하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                  }
+                })()}>삭제</button>
               </div>
             ))}
           </aside>
@@ -259,8 +298,20 @@ export default function App() {
             <div className="panel-title-row">
               <h2>{activeCollection?.collection.title ?? "컬렉션을 만들어 주세요"}</h2>
               {activeCollection && selectedSymbol && (
-                <button className="primary-action compact" type="button" onClick={() => { workspace.addCollectionItem(activeCollection.collection.id, selectedSymbol.id, "entry", ""); refreshCollections(activeCollection.collection.id); }}>
-                  현재 함수 추가
+                <button
+                  className="primary-action compact"
+                  type="button"
+                  disabled={selectedAlreadyIncluded}
+                  onClick={() => void (async () => {
+                    try {
+                      await workspace.addCollectionItem(activeCollection.collection.id, selectedSymbol.id, "entry", "");
+                      refreshCollections(activeCollection.collection.id);
+                    } catch (error) {
+                      setStatus(error instanceof Error ? error.message : String(error));
+                    }
+                  })()}
+                >
+                  {selectedAlreadyIncluded ? "이미 추가됨" : "현재 함수 추가"}
                 </button>
               )}
             </div>
@@ -272,7 +323,15 @@ export default function App() {
                       <strong>{item.symbolFqn}</strong>
                       <small>{item.isChanged ? "변경됨" : item.status === "orphan" ? "연결 필요" : "연결됨"}</small>
                     </div>
-                    <select value={String(item.role)} onChange={(event) => { workspace.updateCollectionItem(activeCollection.collection.id, item.id, { role: event.target.value as CollectionItemRole }); refreshCollections(activeCollection.collection.id); }}>
+                    <select value={String(item.role)} onChange={(event) => void (async () => {
+                      try {
+                        const saved = workspace.updateCollectionItem(activeCollection.collection.id, item.id, { role: event.target.value as CollectionItemRole });
+                        refreshCollections(activeCollection.collection.id);
+                        await saved;
+                      } catch (error) {
+                        setStatus(`컬렉션을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+                      }
+                    })()}>
                       <option value="entry">entry</option>
                       <option value="core">core</option>
                       <option value="data">data</option>
@@ -280,10 +339,18 @@ export default function App() {
                       <option value="error">error</option>
                       <option value="other">other</option>
                     </select>
-                    <input aria-label={`${item.symbolFqn} 메모`} placeholder="메모" value={item.memo} onChange={(event) => { workspace.updateCollectionItem(activeCollection.collection.id, item.id, { memo: event.target.value }); refreshCollections(activeCollection.collection.id); }} />
+                    <input aria-label={`${item.symbolFqn} 메모`} placeholder="메모" value={item.memo} onChange={(event) => void (async () => {
+                      try {
+                        const saved = workspace.updateCollectionItem(activeCollection.collection.id, item.id, { memo: event.target.value });
+                        refreshCollections(activeCollection.collection.id);
+                        await saved;
+                      } catch (error) {
+                        setStatus(`컬렉션을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+                      }
+                    })()} />
                     <div className="move-actions">
-                      <button type="button" onClick={() => reorderItem(workspace, activeCollection, item.id, -1, refreshCollections)}>위</button>
-                      <button type="button" onClick={() => reorderItem(workspace, activeCollection, item.id, 1, refreshCollections)}>아래</button>
+                      <button type="button" onClick={() => void reorderItem(workspace, activeCollection, item.id, -1, refreshCollections, setStatus)}>위</button>
+                      <button type="button" onClick={() => void reorderItem(workspace, activeCollection, item.id, 1, refreshCollections, setStatus)}>아래</button>
                     </div>
                   </article>
                 ))}
@@ -306,7 +373,7 @@ function RecordWorkspace({
 }: {
   selectedSymbol: SymbolRecord | null;
   note: NoteRecord | undefined;
-  onSave: (title: string, bodyMarkdown: string, tags: string) => void;
+  onSave: (title: string, bodyMarkdown: string, tags: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState(note?.title ?? "");
   const [body, setBody] = useState(note?.bodyMarkdown ?? "");
@@ -325,7 +392,7 @@ function RecordWorkspace({
         <label className="field-label">제목<input value={title} onChange={(event) => setTitle(event.target.value)} disabled={!selectedSymbol} /></label>
         <label className="field-label">태그<input value={tags} onChange={(event) => setTags(event.target.value)} disabled={!selectedSymbol} placeholder="api, auth" /></label>
         <label className="field-label">노트<textarea value={body} onChange={(event) => setBody(event.target.value)} disabled={!selectedSymbol} rows={14} /></label>
-        <button className="primary-action compact" type="button" disabled={!selectedSymbol} onClick={() => onSave(title, body, tags)}>저장</button>
+        <button className="primary-action compact" type="button" disabled={!selectedSymbol} onClick={() => void onSave(title, body, tags)}>저장</button>
       </div>
     </section>
   );
@@ -363,18 +430,24 @@ function sliceAroundSymbol(file: SourceFile, symbol: SymbolRecord): string {
   return file.source.split(/\r?\n/).slice(Math.max(0, symbol.startLine - 3), symbol.endLine + 2).join("\n");
 }
 
-function reorderItem(
+async function reorderItem(
   workspace: BrowserWorkspace,
   detail: BrowserCollectionDetail,
   itemId: number,
   direction: -1 | 1,
   refresh: (preferredId: number | null) => void,
+  setStatus: (message: string) => void,
 ) {
   const ids = detail.items.map((item) => item.id);
   const index = ids.indexOf(itemId);
   const target = index + direction;
   if (index < 0 || target < 0 || target >= ids.length) return;
   [ids[index], ids[target]] = [ids[target], ids[index]];
-  workspace.reorderCollectionItems(detail.collection.id, ids);
-  refresh(detail.collection.id);
+  try {
+    const saved = workspace.reorderCollectionItems(detail.collection.id, ids);
+    refresh(detail.collection.id);
+    await saved;
+  } catch (error) {
+    setStatus(`컬렉션 순서를 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }

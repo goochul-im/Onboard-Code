@@ -7,7 +7,6 @@ const distRoot = process.env.PRIVACY_AUDIT_DIST ? resolve(process.env.PRIVACY_AU
 
 const requiredFiles = [
   "index.html",
-  "CNAME",
   "manifest.webmanifest",
   "sw.js",
   "wasm/web-tree-sitter.wasm",
