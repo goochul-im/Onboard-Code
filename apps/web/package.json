@@ -8,8 +8,8 @@
     "dev": "npm run build:grammars && vite --host 127.0.0.1 --port 1430",
     "build": "npm run build:grammars && tsc --build && vite build",
     "privacy:audit": "node scripts/privacy-audit.mjs",
-    "test": "vitest run",
-    "check": "npm run test && npm run build && npm run privacy:audit"
+    "test": "npm run build:grammars && vitest run",
+    "check": "npm run test && tsc --build && vite build && npm run privacy:audit"
   },
   "dependencies": {
     "cytoscape": "^3.33.1",
