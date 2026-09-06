@@ -100,6 +100,11 @@ regions are large, readable, and free of dense icon or image details.
   measured; order and graph view controls available.
 - Mobile: no horizontal overflow; topbar and analysis actions 42.47px high;
   tooltip within viewport.
+- Scroll isolation: at 1392 × 700 the document measured 700px client and
+  scroll height with `scrollY=0`; the Explore sidebar scrolled independently,
+  Record source scrolled from 0 to 180px, and graph wheel zoom changed from
+  0.5809 to 0.6083 without moving the document. At 390px the document retained
+  normal vertical scrolling for the stacked mobile layout.
 - Browser console exceptions: none.
 - Unexpected remote requests during local interaction run: none.
 - Subpath production build: service worker active at `/Onboard-Code/`; 3 graph
