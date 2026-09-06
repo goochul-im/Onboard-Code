@@ -31,6 +31,18 @@ npm install
 npm run tauri dev
 ```
 
+## 브라우저 PWA 배포
+
+대회 제출용 웹 버전은 `apps/web`에서 별도로 빌드합니다. 사용자는 URL만 열고 로컬 폴더 접근을 승인하면 되며, 분석은 브라우저의 WebAssembly와 브라우저 저장소 안에서만 수행됩니다.
+
+```sh
+cd apps/web
+npm install
+npm run check
+```
+
+GitHub Pages 배포 워크플로는 웹 빌드 뒤 `npm run privacy:audit`를 실행해 배포 산출물에 원격 업로드·분석/텔레메트리 흔적과 필수 WASM 자산 누락이 없는지 확인합니다. `onboardcode.app` 사용자 지정 도메인과 DNS/HTTPS 설정 절차는 [PWA 배포 가이드](docs/pwa-deployment.md)를 참고하세요.
+
 ## 검증 및 패키징
 
 ```sh

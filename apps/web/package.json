@@ -1,0 +1,35 @@
+{
+  "name": "onboard-code-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:grammars": "node scripts/build-grammars.mjs",
+    "dev": "npm run build:grammars && vite --host 127.0.0.1 --port 1430",
+    "build": "npm run build:grammars && tsc --build && vite build",
+    "privacy:audit": "node scripts/privacy-audit.mjs",
+    "test": "vitest run",
+    "check": "npm run test && npm run build && npm run privacy:audit"
+  },
+  "dependencies": {
+    "cytoscape": "^3.33.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "web-tree-sitter": "0.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tree-sitter-cli": "0.27.0",
+    "tree-sitter-java": "0.23.5",
+    "tree-sitter-php": "0.24.2",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-typescript": "0.23.2",
+    "typescript": "^5.9.0",
+    "vite": "^7.2.0",
+    "vite-plugin-pwa": "1.3.0",
+    "vitest": "^4.0.0"
+  }
+}
