@@ -137,7 +137,24 @@ input:focus, select:focus, textarea:focus { border-color: #8cb5ff; box-shadow: 0
 .source-heading, .markdown-editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .source-heading h3, .markdown-editor-header h2 { margin: .18rem 0 0; color: #eef4ff; font-size: 1rem; }
 .source-heading > span { color: #9db0cb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; white-space: nowrap; }
+.source-selection-guide { margin: .65rem 0 -.2rem; color: #94a5bc; font-size: .74rem; line-height: 1.45; }
+.source-selection-guide code { border-radius: 4px; padding: .08rem .22rem; color: #bce8df; background: #20312f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.source-selection-guide kbd { border: 1px solid #53637d; border-radius: 4px; padding: .06rem .24rem; color: #dce7f7; background: #202938; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; }
 .code-preview { flex: 1; min-height: 0; margin: .9rem 0 0; overflow: auto; overscroll-behavior: contain; border: 0; border-radius: 0; padding: .9rem; color: #c8d3e5; background: var(--surface-graph); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1.62; white-space: pre; }
+.selectable-source { cursor: text; user-select: text; touch-action: auto; }
+.code-line { display: block; min-width: max-content; min-height: 1.62em; padding: 0 .75rem; white-space: pre; }
+.code-line > .line-number { display: inline-block; width: 3.7rem; margin-right: .75rem; color: #62718a; user-select: none; }
+.code-line.selected { background: #23395a; color: #f4f8ff; box-shadow: inset 3px 0 #8cb5ff; }
+.code-line.line-reference { background: #21453f; color: #effff9; box-shadow: inset 3px 0 #79d4c0; }
+.code-line.selected.line-reference { background: linear-gradient(90deg, #21453f, #23395a); box-shadow: inset 3px 0 #f5c979; }
+.syntax-token.token-annotation { color: #61afef; }
+.syntax-token.token-comment { color: #6f7b90; font-style: italic; }
+.syntax-token.token-function { color: #61afef; }
+.syntax-token.token-keyword { color: #c678dd; font-style: italic; }
+.syntax-token.token-number { color: #d19a66; }
+.syntax-token.token-string { color: #98c379; }
+.syntax-token.token-type { color: #e5c07b; }
+.source-empty { margin: 1rem 0 0; }
 .markdown-editor { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; padding: 1.25rem; background: var(--surface-raised); }
 .markdown-editor-header .muted { margin: .22rem 0 0; }
 .note-body-label { display: flex; flex: 1; flex-direction: column; }

@@ -18,7 +18,10 @@ import {
 } from "./core";
 import { CallGraph } from "./components/CallGraph";
 import { GroupedSymbolList } from "./components/GroupedSymbolList";
+import { insertTextAtSelection } from "./components/noteInsertion";
 import { SelectedSymbolHeading } from "./components/SelectedSymbolHeading";
+import { SourceCodeViewer } from "./components/SourceCodeViewer";
+import { lineReferenceModifierForUserAgent } from "./components/sourceLineGesture";
 import { Tooltip } from "./components/Tooltip";
 
 type WorkspaceTab = "explore" | "record" | "collections";
@@ -316,7 +319,13 @@ export default function App() {
       )}
 
       {tab === "record" && (
-        <RecordWorkspace selectedSymbol={selectedSymbol} sourceFile={sourceFile} note={note} onSave={saveCurrentNote} />
+        <RecordWorkspace
+          selectedSymbol={selectedSymbol}
+          sourceFile={sourceFile}
+          note={note}
+          onSave={saveCurrentNote}
+          onLineReferenceInserted={(reference) => setStatus(`${reference} 참조를 노트에 추가했습니다. 저장 버튼을 눌러 보관하세요.`)}
+        />
       )}
 
       {tab === "collections" && (
@@ -478,21 +487,50 @@ function RecordWorkspace({
   sourceFile,
   note,
   onSave,
+  onLineReferenceInserted,
 }: {
   selectedSymbol: SymbolRecord | null;
   sourceFile: SourceFile | null;
   note: NoteRecord | undefined;
   onSave: (title: string, bodyMarkdown: string, tags: string) => Promise<void>;
+  onLineReferenceInserted: (reference: string) => void;
 }) {
   const [title, setTitle] = useState(note?.title ?? "");
   const [body, setBody] = useState(note?.bodyMarkdown ?? "");
   const [tags, setTags] = useState(note?.tags.join(", ") ?? "");
+  const noteTextarea = useRef<HTMLTextAreaElement>(null);
+  const selection = useRef({ start: note?.bodyMarkdown.length ?? 0, end: note?.bodyMarkdown.length ?? 0 });
+  const lineReferenceModifier = useMemo(
+    () => lineReferenceModifierForUserAgent(typeof navigator === "undefined" ? "" : navigator.userAgent),
+    [],
+  );
 
   useEffect(() => {
     setTitle(note?.title ?? "");
     setBody(note?.bodyMarkdown ?? "");
     setTags(note?.tags.join(", ") ?? "");
-  }, [note, selectedSymbol?.id]);
+    const cursor = note?.bodyMarkdown.length ?? 0;
+    selection.current = { start: cursor, end: cursor };
+  }, [note?.id, selectedSymbol?.id]);
+
+  const rememberSelection = () => {
+    if (!noteTextarea.current) return;
+    selection.current = {
+      start: noteTextarea.current.selectionStart,
+      end: noteTextarea.current.selectionEnd,
+    };
+  };
+
+  const insertLineReference = (reference: string) => {
+    const result = insertTextAtSelection(body, selection.current.start, selection.current.end, reference);
+    setBody(result.value);
+    selection.current = { start: result.cursor, end: result.cursor };
+    requestAnimationFrame(() => {
+      noteTextarea.current?.focus();
+      noteTextarea.current?.setSelectionRange(result.cursor, result.cursor);
+    });
+    onLineReferenceInserted(reference);
+  };
 
   return (
     <section className="record-workspace" aria-label="분석 기록">
@@ -508,7 +546,9 @@ function RecordWorkspace({
             <h3>소스</h3>
             {selectedSymbol && <span>{selectedSymbol.relativePath}:{selectedSymbol.startLine}-{selectedSymbol.endLine}</span>}
           </div>
-          <pre className="code-preview full-source">{sourceFile?.source ?? "원본 소스는 영구 저장하지 않습니다. Explore에서 같은 폴더를 다시 열어 주세요."}</pre>
+          {sourceFile && selectedSymbol
+            ? <SourceCodeViewer sourceFile={sourceFile} selectedSymbol={selectedSymbol} modifier={lineReferenceModifier} onInsertLineReference={insertLineReference} />
+            : <p className="muted source-empty">원본 소스는 영구 저장하지 않습니다. Explore에서 같은 폴더를 다시 열어 주세요.</p>}
         </section>
         <section className="markdown-editor" aria-label="함수 노트">
           <div className="markdown-editor-header">
@@ -517,7 +557,23 @@ function RecordWorkspace({
           </div>
           <label className="field-label">제목<input value={title} onChange={(event) => setTitle(event.target.value)} disabled={!selectedSymbol} /></label>
           <label className="field-label">태그<input value={tags} onChange={(event) => setTags(event.target.value)} disabled={!selectedSymbol} placeholder="api, auth" /></label>
-          <label className="field-label note-body-label">노트<textarea value={body} onChange={(event) => setBody(event.target.value)} disabled={!selectedSymbol} /></label>
+          <label className="field-label note-body-label">
+            노트
+            <textarea
+              ref={noteTextarea}
+              value={body}
+              onChange={(event) => {
+                setBody(event.target.value);
+                selection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
+              }}
+              onSelect={rememberSelection}
+              onKeyUp={rememberSelection}
+              onClick={rememberSelection}
+              onBlur={rememberSelection}
+              disabled={!selectedSymbol}
+              aria-label="함수 노트 편집기"
+            />
+          </label>
         </section>
       </div>
     </section>

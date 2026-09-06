@@ -11,6 +11,7 @@
   - `.omx/audits/ui-consistency/08-web-parity-mobile.png`
   - `.omx/audits/ui-consistency/13-production-final.png`
   - `.omx/audits/ui-consistency/14-deployed-final.png`
+  - `.omx/audits/ui-consistency/15-web-record-line-reference.png`
 - Source pixels: 2784 × 1824, macOS 2x window capture
 - Source normalized content: 1280 × 769
 - Implementation comparison: 1280 × 769 CSS px, deviceScaleFactor 1
@@ -96,6 +97,11 @@ regions are large, readable, and free of dense icon or image details.
   detail action present; no Explore source panel.
 - Record: source loaded; title/tags/body edited; note persisted; scroll position
   reset to top on workspace change.
+- Record source parity: 33 numbered lines rendered with language tokens; the
+  selected function range was highlighted; a normal click preserved the note,
+  Command-click on line 30 inserted `[line:30]` at the note cursor, and
+  Command-drag through line 32 inserted `[line:30-32]` while marking all three
+  referenced lines.
 - Collections: collection selected; one function item rendered; 3-column layout
   measured; order and graph view controls available.
 - Mobile: no horizontal overflow; topbar and analysis actions 42.47px high;
