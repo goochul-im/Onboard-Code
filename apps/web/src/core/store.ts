@@ -99,6 +99,7 @@ export class BrowserWorkspace {
       diagnostics: result.diagnostics,
       analyzedAt: new Date().toISOString(),
     };
+    this.state.workspace.reanalysisRequired = false;
     this.relinkStoredItems();
     await this.saveIfAvailable();
     return summary;

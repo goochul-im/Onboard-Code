@@ -90,6 +90,46 @@ describe("browser engine store", () => {
     }))).toThrow("더 새로운 OnboardCode Web 형식");
   });
 
+  it("requires one reanalysis when a legacy state has edges without callers", () => {
+    const legacy = {
+      ...parseBrowserState("{}"),
+      index: {
+        repository: {
+          id: "repo",
+          rootPath: "repo",
+          displayName: "repo",
+          branch: "browser",
+          head: "legacy",
+          isDirty: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          runtime: "browser",
+        },
+        summary: {
+          workspaceName: "repo",
+          sourceFileCount: 1,
+          symbolCount: 2,
+          edgeCount: 1,
+          diagnosticCount: 0,
+          analyzedAt: "2026-01-01T00:00:00.000Z",
+        },
+        symbols: [alpha, beta],
+        edges: [{ id: 1, target: "beta", unresolvedName: null, confidence: "resolved", sourceLine: 2 }],
+        diagnostics: [],
+        analyzedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+
+    const migrated = parseBrowserState(JSON.stringify({
+      kind: "onboardcode.browser.workspace",
+      version: 2,
+      data: legacy,
+    }));
+
+    expect(migrated.index).toBeNull();
+    expect(migrated.workspace.reanalysisRequired).toBe(true);
+  });
+
   it("creates collections and marks relinked symbols as changed after re-analysis", async () => {
     let nextSymbols = [alpha];
     const changingAnalyzer: BrowserAnalyzer = {

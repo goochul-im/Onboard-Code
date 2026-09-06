@@ -1,6 +1,6 @@
 import type { BrowserPersistedState } from "./types";
 
-export const BROWSER_STATE_VERSION = 2;
+export const BROWSER_STATE_VERSION = 3;
 const STATE_FILE_NAME = "onboardcode-browser-state.json";
 
 export interface BrowserStateEnvelope {
@@ -19,6 +19,7 @@ export const emptyPersistedState: BrowserPersistedState = {
     selectedSymbolId: null,
     graphDepth: 2,
     selectedCollectionId: null,
+    reanalysisRequired: false,
   },
   counters: {
     noteId: 1,
@@ -94,6 +95,11 @@ function migrateState(version: number, data: Partial<BrowserPersistedState> | un
   next.counters = { ...next.counters, ...(data.counters ?? {}) };
   if (version < 2) {
     next.collectionItems = next.collectionItems.map((item, index) => ({ ...item, sortOrder: item.sortOrder ?? index }));
+  }
+  if (version < 3 && next.index?.edges.some((edge) => typeof edge.source !== "string" || edge.source.length === 0)) {
+    next.index = null;
+    next.workspace.selectedSymbolId = null;
+    next.workspace.reanalysisRequired = true;
   }
   return stripSourceText(next);
 }

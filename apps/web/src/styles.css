@@ -309,8 +309,9 @@ textarea {
   color: #b9c6c8;
 }
 
-.depth-control input {
-  width: 88px;
+.depth-control select {
+  width: 86px;
+  padding: 6px 8px;
 }
 
 .symbol-list,
@@ -362,6 +363,58 @@ textarea {
 
 .call-graph {
   position: relative;
+}
+
+.graph-heading {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.graph-heading > div {
+  min-width: 0;
+}
+
+.graph-heading h2,
+.graph-heading small {
+  display: block;
+  overflow: hidden;
+  margin-bottom: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-heading small {
+  margin-top: 3px;
+  color: #9aa9ab;
+}
+
+.graph-status,
+.uncertain-calls,
+.graph-error {
+  margin: 10px 0 0;
+  border: 1px solid rgba(242, 189, 95, 0.32);
+  border-radius: 7px;
+  padding: 10px 12px;
+  color: #dacb9e;
+  background: rgba(71, 59, 29, 0.35);
+  font-size: 0.82rem;
+}
+
+.graph-error {
+  color: #f2b5b5;
+  border-color: rgba(255, 122, 122, 0.45);
+  background: rgba(79, 35, 39, 0.42);
+}
+
+.uncertain-calls ul {
+  max-height: 100px;
+  margin: 7px 0 0;
+  overflow: auto;
+  padding-left: 18px;
+}
+
+.uncertain-calls code {
+  color: #f0dc9e;
 }
 
 .graph-empty {

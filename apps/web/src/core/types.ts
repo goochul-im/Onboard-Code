@@ -208,6 +208,7 @@ export interface BrowserWorkspaceState {
   selectedSymbolId: string | null;
   graphDepth: number;
   selectedCollectionId: number | null;
+  reanalysisRequired?: boolean;
 }
 
 export interface BrowserPersistedState {

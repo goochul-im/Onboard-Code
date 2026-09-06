@@ -55,4 +55,19 @@ describe("Tree-sitter WASM browser analyzer", () => {
       ]);
     });
   }
+
+  it("resolves a uniquely named qualified method call", async () => {
+    const result = await analyzeBrowserFiles([{
+      relativePath: "src/qualified.ts",
+      language: "typescript",
+      source: "class Demo { entry() { this.helper(); } helper() { return 1; } }",
+    }], wasmBaseUrl);
+    const helper = result.symbols.find((symbol) => symbol.fqn.endsWith(".helper"));
+
+    expect(helper).toBeDefined();
+    expect(result.edges).toContainEqual(expect.objectContaining({
+      confidence: "resolved",
+      target: helper?.id,
+    }));
+  });
 });

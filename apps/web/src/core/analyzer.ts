@@ -370,7 +370,7 @@ export function resolveCalls(symbols: SymbolRecord[], calls: RawCall[]): GraphEd
     const sameFile = caller ? byFileAndName.get(`${call.language}:${caller.relativePath}:${call.targetName}`) ?? [] : [];
     const global = byName.get(`${call.language}:${call.targetName}`) ?? [];
     const candidates = sameScope.length > 0 ? sameScope : !call.isQualified && sameFile.length > 0 ? sameFile : global;
-    const confidence: EdgeConfidence = candidates.length === 1 && !call.isQualified ? "resolved" : candidates.length === 0 ? "unresolved" : "ambiguous";
+    const confidence: EdgeConfidence = candidates.length === 1 ? "resolved" : candidates.length === 0 ? "unresolved" : "ambiguous";
 
     return {
       id: index + 1,

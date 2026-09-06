@@ -3,7 +3,6 @@ import {
   BrowserWorkspace,
   browserFileAccessSupported,
   filesFromFileList,
-  languageFromPath,
   pickRepositoryDirectory,
   privacyTooltip,
   type BrowserAnalysisIndex,
@@ -28,8 +27,6 @@ const supportedLanguages = [
   { label: "TypeScript", extensions: ".ts, .tsx" },
 ];
 
-const sampleSource = `export function greetUser(name: string) {\n  return formatMessage(name);\n}\n\nfunction formatMessage(name: string) {\n  return "Hello " + name;\n}\n`;
-
 export default function App() {
   const workspaceRef = useRef<BrowserWorkspace | null>(null);
   workspaceRef.current ??= new BrowserWorkspace();
@@ -46,8 +43,6 @@ export default function App() {
   const [depth, setDepth] = useState(2);
   const [status, setStatus] = useState("URL에서 바로 실행할 수 있습니다.");
   const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
-  const [fallbackPath, setFallbackPath] = useState("src/example.ts");
-  const [fallbackSource, setFallbackSource] = useState(sampleSource);
   const [collectionTitle, setCollectionTitle] = useState("");
   const [collectionQuery, setCollectionQuery] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -55,9 +50,15 @@ export default function App() {
   useEffect(() => {
     void workspace.load().then((state) => {
       setIndex(state.index);
-      setSelectedId(state.workspace.selectedSymbolId ?? state.index?.symbols[0]?.id ?? null);
+      const restoredSelection = state.index?.symbols.some((symbol) => symbol.id === state.workspace.selectedSymbolId)
+        ? state.workspace.selectedSymbolId
+        : state.index?.symbols[0]?.id ?? null;
+      setSelectedId(restoredSelection);
       setDepth(state.workspace.graphDepth);
       refreshCollections(state.workspace.selectedCollectionId ?? null);
+      if (state.workspace.reanalysisRequired) {
+        setStatus("이전 웹 분석의 그래프 저장 형식이 변경되었습니다. 노트와 컬렉션은 유지했으니 폴더를 다시 열어 분석해 주세요.");
+      }
     }).catch((error) => {
       setStatus(`저장된 브라우저 데이터를 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -76,7 +77,9 @@ export default function App() {
   const symbols = index?.symbols ?? [];
   const selectedSymbol = symbols.find((symbol) => symbol.id === selectedId) ?? null;
   const filteredSymbols = workspace.searchSymbols(query).filter((symbol) => languageFilter === "all" || symbol.language === languageFilter);
-  const graph = useMemo(() => safeGraph(workspace, selectedId, depth), [workspace, selectedId, depth, index]);
+  const graphResult = useMemo(() => readGraph(workspace, selectedId, depth), [workspace, selectedId, depth, index]);
+  const graph = graphResult.graph;
+  const uncertainEdges = graph?.edges.filter((edge) => !edge.target) ?? [];
   const sourceSlice = useMemo(() => safeSourceSlice(workspace, selectedSymbol), [workspace, selectedSymbol]);
   const note = selectedId ? workspace.listNotes(selectedId)[0] : undefined;
   const visibleCollections = collections.filter((collection) =>
@@ -120,15 +123,6 @@ export default function App() {
   async function handleFallbackInput(files: FileList | null) {
     if (!files?.length) return;
     await analyzeRepository({ displayName: "selected-files", files: await filesFromFileList(files) });
-  }
-
-  async function handlePasteAnalysis() {
-    const language = languageFromPath(fallbackPath);
-    if (!language) {
-      setStatus("붙여넣기 경로는 .java, .py, .php, .ts, .tsx 중 하나여야 합니다.");
-      return;
-    }
-    await analyzeRepository({ displayName: "pasted-source", files: [{ relativePath: fallbackPath, source: fallbackSource, language }] });
   }
 
   function refreshCollections(preferredId: number | null) {
@@ -201,17 +195,6 @@ export default function App() {
               파일로 열기
             </button>
             <input ref={fileInput} className="hidden-input" type="file" multiple webkitdirectory="" onChange={(event) => void handleFallbackInput(event.currentTarget.files)} />
-            <label className="field-label">
-              붙여넣기 경로
-              <input value={fallbackPath} onChange={(event) => setFallbackPath(event.target.value)} />
-            </label>
-            <label className="field-label">
-              붙여넣기 코드
-              <textarea value={fallbackSource} onChange={(event) => setFallbackSource(event.target.value)} rows={8} />
-            </label>
-            <button className="secondary-action" type="button" onClick={() => void handlePasteAnalysis()} disabled={analyzing}>
-              붙여넣기 분석
-            </button>
             <div className="language-list">
               {supportedLanguages.map((language) => <span key={language.label}>{language.label} {language.extensions}</span>)}
             </div>
@@ -227,11 +210,6 @@ export default function App() {
                 <option value="php">PHP</option>
                 <option value="typescript">TypeScript</option>
               </select>
-              <label className="depth-control">
-                깊이
-                <input type="range" min="1" max="3" value={depth} onChange={(event) => setDepth(Number(event.target.value))} />
-                {depth}
-              </label>
             </div>
             <div className="symbol-list" role="list">
               {filteredSymbols.map((symbol) => (
@@ -245,7 +223,37 @@ export default function App() {
           </section>
 
           <section className="panel graph-panel">
+            <div className="panel-title-row graph-heading">
+              <div>
+                <h2>{selectedSymbol?.fqn ?? "함수를 선택하세요"}</h2>
+                {selectedSymbol && <small>{selectedSymbol.relativePath}:{selectedSymbol.startLine}</small>}
+              </div>
+              <label className="depth-control">
+                펼칠 깊이
+                <select value={depth} onChange={(event) => setDepth(Number(event.target.value))} disabled={!selectedSymbol}>
+                  <option value={1}>1단계</option>
+                  <option value={2}>2단계</option>
+                  <option value={3}>3단계</option>
+                </select>
+              </label>
+            </div>
             <CallGraph graph={graph} selectedSymbolId={selectedId} onSelectSymbol={setSelectedId} />
+            {graphResult.error && <p className="graph-error" role="alert">호출 그래프를 불러오지 못했습니다: {graphResult.error}</p>}
+            {graph && selectedSymbol && graph.nodes.length === 1 && uncertainEdges.length === 0 && (
+              <p className="graph-status">이 함수에서 확정된 caller/callee 관계를 찾지 못했습니다.</p>
+            )}
+            {uncertainEdges.length > 0 && (
+              <div className="uncertain-calls">
+                <strong>확정할 수 없는 호출</strong>
+                <ul>
+                  {uncertainEdges.map((edge) => (
+                    <li key={edge.id}>
+                      <code>{edge.unresolvedName}</code> · {edge.confidence === "ambiguous" ? "후보가 여러 개" : "대상을 찾지 못함"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </section>
 
           <section className="panel source-panel">
@@ -398,12 +406,16 @@ function RecordWorkspace({
   );
 }
 
-function safeGraph(workspace: BrowserWorkspace, symbolId: string | null, depth: number): GraphData | null {
-  if (!symbolId) return null;
+function readGraph(
+  workspace: BrowserWorkspace,
+  symbolId: string | null,
+  depth: number,
+): { graph: GraphData | null; error: string | null } {
+  if (!symbolId) return { graph: null, error: null };
   try {
-    return workspace.getGraph(symbolId, depth);
-  } catch {
-    return null;
+    return { graph: workspace.getGraph(symbolId, depth), error: null };
+  } catch (error) {
+    return { graph: null, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
