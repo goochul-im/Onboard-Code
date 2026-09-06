@@ -25,6 +25,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: npm run check
-      - run: npm run tauri -- build --debug
-        env:
-          TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false}}'
+      - run: npm run tauri -- build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
