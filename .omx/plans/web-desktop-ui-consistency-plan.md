@@ -185,3 +185,15 @@ visual language, all browser limitations remain honest and visible, the graph
 flow is explicit in every state, and both web and desktop verification gates
 pass. DNS completion is tracked separately in `TODO.md` and does not redefine UI
 parity completion.
+
+## Implementation Status — 2026-09-06
+
+- [x] Compact desktop-style shell, underline navigation, and status strip
+- [x] 320px Explore sidebar with repository state, analysis, filters, and grouped symbols
+- [x] Dominant graph workspace with selected-symbol heading, depth, collection action, and Record node action
+- [x] Explicit confirmed, empty, uncertain, migration-required, and error graph states
+- [x] Record source-left/note-right split workspace
+- [x] Collections left-list/center-flow/right-information layout with order and graph views
+- [x] Desktop slate/blue tokens, graph node scale, responsive stacking, and mobile tooltip bounds
+- [x] Component/unit checks, real-browser interaction checks, visual comparison, and `design-qa.md` pass
+- [ ] Public deployment verification after the final implementation commit
