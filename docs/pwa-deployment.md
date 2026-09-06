@@ -7,12 +7,14 @@ browser storage.
 
 ## GitHub Pages
 
-The `Deploy web PWA` workflow builds `apps/web`, runs the privacy audit, uploads
-`apps/web/dist`, and deploys that artifact to GitHub Pages.
+The `Deploy web PWA` workflow builds `apps/web`, runs the privacy audit, and
+publishes the verified `apps/web/dist` contents to the `gh-pages` branch. The
+repository's branch-based Pages deployment then serves that commit.
 
 Required repository setting:
 
-- Settings > Pages > Build and deployment > Source: GitHub Actions
+- Settings > Pages > Build and deployment > Source: Deploy from a branch
+- Branch: `gh-pages`, folder: `/ (root)`
 
 The default Pages URL is:
 
