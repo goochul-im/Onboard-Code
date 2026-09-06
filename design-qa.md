@@ -10,6 +10,7 @@
   - `.omx/audits/ui-consistency/07-web-parity-collections.png`
   - `.omx/audits/ui-consistency/08-web-parity-mobile.png`
   - `.omx/audits/ui-consistency/13-production-final.png`
+  - `.omx/audits/ui-consistency/14-deployed-final.png`
 - Source pixels: 2784 × 1824, macOS 2x window capture
 - Source normalized content: 1280 × 769
 - Implementation comparison: 1280 × 769 CSS px, deviceScaleFactor 1
@@ -104,6 +105,10 @@ regions are large, readable, and free of dense icon or image details.
 - Subpath production build: service worker active at `/Onboard-Code/`; 3 graph
   nodes and 2 edges rendered; Record opened with source; offline reload remained
   controlled and rendered; no unexpected remote request or console error.
+- Public Pages deployment: 68.06px compact header, 320px Explore sidebar, one
+  grouped class/file result, 3 graph nodes, 2 edges, graph-node Record action,
+  and active service worker verified with zero unexpected requests or console
+  errors.
 
 ## Follow-up polish
 
@@ -123,5 +128,6 @@ regions are large, readable, and free of dense icon or image details.
 - [x] Preserve browser-only privacy/limitations UI.
 - [x] Verify desktop and mobile layouts in a real browser.
 - [x] Check console and network behavior.
+- [x] Verify the published GitHub Pages build.
 
 final result: passed

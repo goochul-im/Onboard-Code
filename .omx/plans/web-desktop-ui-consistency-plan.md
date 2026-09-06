@@ -196,4 +196,4 @@ parity completion.
 - [x] Collections left-list/center-flow/right-information layout with order and graph views
 - [x] Desktop slate/blue tokens, graph node scale, responsive stacking, and mobile tooltip bounds
 - [x] Component/unit checks, real-browser interaction checks, visual comparison, and `design-qa.md` pass
-- [ ] Public deployment verification after the final implementation commit
+- [x] Public deployment verification after the final implementation commit
